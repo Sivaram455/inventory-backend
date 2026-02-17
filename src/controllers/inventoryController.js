@@ -1,5 +1,8 @@
 const { sequelize, InwardRegister, InwardItem, OutwardRegister, OutwardItem, ProductItem, ProductMaster, Unit, VehicleUsage } = require('../models');
 const xlsx = require('xlsx');
+const ExcelJS = require('exceljs');
+const path = require('path');
+const fs = require('fs');
 
 // Scan Item by Barcode or IMEI
 exports.getItemByBarcode = async (req, res) => {
@@ -184,7 +187,7 @@ exports.createOutward = async (req, res) => {
 
 // Helpers
 function normalizeHeader(h) {
-    return String(h || '').trim().toLowerCase().replace(/[\s_]+/g, '');
+    return String(h || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 async function resolveUnitId(unitHint) {
@@ -228,7 +231,7 @@ exports.uploadInwardExcel = async (req, res) => {
                 acc[normalizeHeader(k)] = r[k];
                 return acc;
             }, {});
-            const productId = keys.productid || keys.product_id || keys.product || null;
+            let productId = keys.productid || keys.product_id || keys.product || keys.selectproduct || null;
             const barcode = keys.barcode || '';
             const imei = keys.imei || '';
             const batch = keys.batch || keys.batchid || keys.batch_id || '';
@@ -238,6 +241,14 @@ exports.uploadInwardExcel = async (req, res) => {
             const unitId = (await resolveUnitId(unitHint)) || null;
 
             if (qty <= 0) continue;
+
+            // Parse Dropdown Format: "ID:123 - Name..."
+            if (productId && typeof productId === 'string' && productId.startsWith('ID:')) {
+                const match = productId.match(/^ID:(\d+)/);
+                if (match) {
+                    productId = match[1];
+                }
+            }
 
             let productItem = null;
             if (barcode || imei) {
@@ -289,18 +300,267 @@ exports.uploadInwardExcel = async (req, res) => {
 
 // Bulk Excel Upload: Outward
 // Bulk Excel Upload: Outward
+// Bulk Excel Upload: Outward
 exports.uploadOutwardExcel = async (req, res) => {
-    // ... (existing code omitted for brevity in prompt but should remain in file, skipping replacing large blocks unless necessary)
-    // Actually, since I need to append to the end and I don't want to replace the whole file, I will target the end of the file.
-    // However, replace_file_content requires a target chunk.
-    // I will use write_to_file to overwrite the file with the NEW content including the new methods, or replace the last closing brace?
-    // replace_file_content is better if I can find a stable target.
-    // The previous output shows the file ends with `exports.uploadOutwardExcel` function block.
-    // I will replace the last function and append the new ones.
-    // Wait, replacing the whole file with `write_to_file` is safer since I have the whole content in context history?
-    // No, I'll use replace_file_content on the last function block or append at the end if I can.
-    // I'll replace the last function `uploadOutwardExcel` and append the new methods after it.
-    // Re-reading the file content... `uploadOutwardExcel` ends at line 369.
+    const t = await sequelize.transaction();
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: 'Excel file is required' });
+        }
+
+        const rows = parseExcel(req.file.buffer);
+        if (!rows.length) {
+            return res.status(400).json({ message: 'No rows found in Excel' });
+        }
+
+        const { outward_date, vehicle_reg_no, vehicle_id, vin_no, sales_category, incharge_person, remarks } = req.body;
+
+        const outward = await OutwardRegister.create({
+            outward_date: outward_date || new Date(),
+            vehicle_reg_no: vehicle_reg_no || '',
+            vehicle_id: vehicle_id || null,
+            vin_no: vin_no || '',
+            sales_category: sales_category || 'DIRECT_SALES',
+            incharge_person: incharge_person || '',
+            remarks: remarks || 'Bulk Upload',
+            created_by: req.user?.id || null,
+        }, { transaction: t });
+
+        for (const r of rows) {
+            const keys = normalizeKeys(r);
+            let productItemId = keys.productitemid || keys.itemid || keys.stockitem || keys.stockitemselectfromdropdown || null;
+            const barcode = keys.barcode || '';
+            const imei = keys.imei || '';
+            const qtyUsed = parseFloat(keys.quantity || keys.qty || keys.quantityused || 0);
+            const unitHint = keys.unit || keys.unitname || '';
+
+            if (qtyUsed <= 0) continue;
+
+            // Parse Dropdown Format: "ID:123 - Name..."
+            if (productItemId && typeof productItemId === 'string' && productItemId.startsWith('ID:')) {
+                const match = productItemId.match(/^ID:(\d+)/);
+                if (match) {
+                    productItemId = match[1];
+                }
+            }
+
+            let productItem = null;
+            // Find by ID or Barcode/IMEI
+            if (productItemId) {
+                productItem = await ProductItem.findByPk(productItemId, { transaction: t });
+            } else if (barcode || imei) {
+                productItem = await ProductItem.findOne({
+                    where: {
+                        [sequelize.Sequelize.Op.or]: [
+                            ...(barcode ? [{ barcode }] : []),
+                            ...(imei ? [{ imei }] : [])
+                        ]
+                    },
+                    transaction: t
+                });
+            }
+
+            if (!productItem) {
+                throw new Error(`Item not found for row: ${JSON.stringify(r)}`);
+            }
+
+            if (parseFloat(productItem.available_quantity) < qtyUsed) {
+                throw new Error(`Insufficient stock for item ${productItem.barcode || productItem.id}. Available: ${productItem.available_quantity}, Requested: ${qtyUsed}`);
+            }
+
+            // Deduct Stock
+            productItem.available_quantity = parseFloat(productItem.available_quantity) - qtyUsed;
+            if (productItem.available_quantity <= 0 && productItem.status !== 'USED') {
+                // productItem.status = 'USED'; // Optional: Mark as used if 0
+                // Keep as IN_STOCK but 0 quantity for now, or change logic as per business rule
+            }
+            await productItem.save({ transaction: t });
+
+            const unitId = (await resolveUnitId(unitHint)) || productItem.unit_id || 1; // Fallback to 1 or logic to get unit from product
+
+            await OutwardItem.create({
+                outward_id: outward.id,
+                product_item_id: productItem.id,
+                quantity_used: qtyUsed,
+                unit_id: unitId,
+            }, { transaction: t });
+        }
+
+        // Auto-log vehicle usage if vehicle_id is provided
+        if (vehicle_id) {
+            await VehicleUsage.create({
+                vehicle_id: vehicle_id,
+                usage_date: outward_date || new Date(),
+                purpose: `Outward Bulk - ${sales_category}`,
+                reference_type: 'Outward',
+                reference_id: outward.id,
+                driver_name: incharge_person || null,
+                remarks: `Auto-logged from Bulk Outward #${outward.id}`,
+                created_by: req.user?.id || null
+            }, { transaction: t });
+        }
+
+        await t.commit();
+        res.status(201).json({ message: 'Outward Excel processed', outwardId: outward.id, rows: rows.length });
+    } catch (error) {
+        await t.rollback();
+        console.error('Upload Outward Excel Error:', error);
+        res.status(500).json({ message: 'Failed to process outward Excel', error: error.message });
+    }
+};
+
+// Helper for parsing Excel
+function parseExcel(buffer) {
+    const wb = xlsx.read(buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    return xlsx.utils.sheet_to_json(ws, { defval: '' });
+}
+
+function normalizeKeys(row) {
+    return Object.keys(row).reduce((acc, k) => {
+        acc[normalizeHeader(k)] = row[k];
+        return acc;
+    }, {});
+}
+
+exports.downloadInwardSample = async (req, res) => {
+    try {
+        // Fetch Master Data
+        const products = await ProductMaster.findAll();
+        const units = await Unit.findAll();
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Inward Entry');
+        const refSheet = workbook.addWorksheet('RefData');
+        refSheet.state = 'hidden';
+
+        // Headers
+        worksheet.columns = [
+            { header: 'Select Product', key: 'product', width: 40 },
+            { header: 'Barcode', key: 'barcode', width: 20 },
+            { header: 'IMEI', key: 'imei', width: 20 },
+            { header: 'Quantity', key: 'quantity', width: 15 },
+            { header: 'Unit', key: 'unit', width: 15 },
+            { header: 'Batch ID', key: 'batch', width: 20 },
+            { header: 'Stock Location', key: 'location', width: 20 }
+        ];
+
+        // Fill Reference Data
+        refSheet.getCell('A1').value = 'Products';
+        refSheet.getCell('B1').value = 'Units';
+
+        products.forEach((p, idx) => {
+            // Format: ID:123 - Name (SKU)
+            const label = `ID:${p.id} - ${p.product_name} (${p.sku || 'N/A'})`;
+            refSheet.getCell(`A${idx + 2}`).value = label;
+        });
+
+        units.forEach((u, idx) => {
+            refSheet.getCell(`B${idx + 2}`).value = u.name;
+        });
+
+        const prodCount = products.length || 1;
+        const unitCount = units.length || 1;
+
+        // Data Validation
+        for (let i = 2; i <= 500; i++) {
+            // Product Dropdown
+            worksheet.getCell(`A${i}`).dataValidation = {
+                type: 'list',
+                allowBlank: true,
+                formulae: [`=RefData!$A$2:$A$${prodCount + 1}`]
+            };
+
+            // Unit Dropdown
+            worksheet.getCell(`E${i}`).dataValidation = {
+                type: 'list',
+                allowBlank: true,
+                formulae: [`=RefData!$B$2:$B$${unitCount + 1}`]
+            };
+        }
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="Inward_Sample.xlsx"');
+
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (error) {
+        console.error('Download Inward Sample Error:', error);
+        res.status(500).json({ message: 'Failed to download sample', error: error.message });
+    }
+};
+
+exports.downloadOutwardSample = async (req, res) => {
+    try {
+        // We need real data to make the dropdowns
+        const items = await ProductItem.findAll({
+            where: {
+                status: 'IN_STOCK',
+                available_quantity: { [sequelize.Sequelize.Op.gt]: 0 }
+            },
+            include: [{ model: ProductMaster }]
+        });
+        const units = await Unit.findAll();
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Outward Entry');
+        const refSheet = workbook.addWorksheet('RefData');
+        refSheet.state = 'hidden';
+
+        // Headers
+        worksheet.columns = [
+            { header: 'Stock Item (Select from Dropdown)', key: 'stock_item', width: 50 },
+            { header: 'Quantity Used', key: 'quantity', width: 15 },
+            { header: 'Unit', key: 'unit', width: 15 },
+            { header: 'Remarks', key: 'remarks', width: 30 }
+        ];
+
+        // Fill Reference Data
+        refSheet.getCell('A1').value = 'StockItems';
+        refSheet.getCell('B1').value = 'Units';
+
+        items.forEach((item, idx) => {
+            // Format: ID:123 - Name (Barcode)
+            const label = `ID:${item.id} - ${item.ProductMaster ? item.ProductMaster.product_name : 'Unknown'} (Qty: ${parseFloat(item.available_quantity)})`;
+            refSheet.getCell(`A${idx + 2}`).value = label;
+        });
+
+        units.forEach((u, idx) => {
+            refSheet.getCell(`B${idx + 2}`).value = u.name;
+        });
+
+        const stockCount = items.length || 1;
+        const unitCount = units.length || 1;
+
+        // Add Data Validation to first 500 rows
+        for (let i = 2; i <= 500; i++) {
+            // Stock Item Dropdown
+            worksheet.getCell(`A${i}`).dataValidation = {
+                type: 'list',
+                allowBlank: true,
+                formulae: [`=RefData!$A$2:$A$${stockCount + 1}`]
+            };
+
+            // Unit Dropdown
+            worksheet.getCell(`C${i}`).dataValidation = {
+                type: 'list',
+                allowBlank: true,
+                formulae: [`=RefData!$B$2:$B$${unitCount + 1}`]
+            };
+        }
+
+        // Add a sample row (optional, or leave blank)
+        // worksheet.addRow({ stock_item: 'Select here...', quantity: 1, unit: 'Pcs' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="Outward_Stock_Sample.xlsx"');
+
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (error) {
+        console.error('Download Outward Sample Error:', error);
+        res.status(500).json({ message: 'Failed to download sample', error: error.message });
+    }
 };
 
 exports.getInwardHistory = async (req, res) => {

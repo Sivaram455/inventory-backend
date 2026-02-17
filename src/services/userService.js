@@ -41,7 +41,12 @@ class UserService {
       if (!isValidPassword) throw new Error('Invalid password');
 
       const token = jwt.sign(
-        { id: user.id, email: user.email, role_id: user.role_id },
+        {
+          id: user.id,
+          email: user.email,
+          role_id: user.role_id,
+          role: user.role?.role_name || 'staff'
+        },
         process.env.JWT_SECRET,
         { expiresIn: process.env.JWT_EXPIRY }
       );
@@ -121,6 +126,25 @@ class UserService {
 
       await user.destroy();
       return { message: 'User deleted successfully' };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async changePassword(userId, oldPassword, newPassword) {
+    try {
+      const user = await User.findByPk(userId);
+      if (!user) throw new Error('User not found');
+
+      // Verify old password
+      const isValidPassword = await user.comparePassword(oldPassword);
+      if (!isValidPassword) throw new Error('Current password is incorrect');
+
+      // Update to new password (will be hashed by the User model hook)
+      user.password = newPassword;
+      await user.save();
+
+      return { message: 'Password changed successfully' };
     } catch (error) {
       throw error;
     }

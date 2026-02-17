@@ -13,8 +13,8 @@ async function startServer() {
     await sequelize.authenticate();
     console.log('✓ Database connection successful');
 
-    // Sync database
-    await sequelize.sync({ alter: true });
+    // Sync database (Removed alter: true to avoid MySQL index limit issues)
+    await sequelize.sync();
     console.log('✓ Database synchronized');
 
     // Start server

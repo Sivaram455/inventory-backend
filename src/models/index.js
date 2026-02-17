@@ -38,6 +38,7 @@ ProductMaster.belongsTo(Unit, { as: 'weight_unit', foreignKey: 'weight_unit_id' 
 ProductMaster.belongsTo(Unit, { as: 'length_unit', foreignKey: 'product_length_unit_id' });
 ProductMaster.belongsTo(Unit, { as: 'width_unit', foreignKey: 'product_width_unit_id' });
 ProductMaster.belongsTo(Unit, { as: 'threshold_unit', foreignKey: 'threshold_unit_id' });
+ProductMaster.belongsTo(Unit, { as: 'pack_size_unit', foreignKey: 'pack_size' });
 
 // Product Master -> Items
 ProductMaster.hasMany(ProductItem, { foreignKey: 'product_id' });

@@ -43,6 +43,44 @@ class UserController {
     }
   }
 
+  async getCurrentUser(req, res, next) {
+    try {
+      const userId = req.user.id; // from authMiddleware
+      const user = await userService.getUserById(userId);
+
+      res.status(200).json({
+        success: true,
+        data: user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async changePassword(req, res, next) {
+    try {
+      const userId = req.user.id; // from authMiddleware
+      const { oldPassword, newPassword } = req.body;
+
+      if (!oldPassword || !newPassword) {
+        return res.status(400).json({ message: 'Old password and new password are required' });
+      }
+
+      if (newPassword.length < 6) {
+        return res.status(400).json({ message: 'New password must be at least 6 characters long' });
+      }
+
+      await userService.changePassword(userId, oldPassword, newPassword);
+
+      res.status(200).json({
+        success: true,
+        message: 'Password changed successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getUserById(req, res, next) {
     try {
       const { id } = req.params;

@@ -77,6 +77,14 @@ const ProductMaster = sequelize.define('ProductMaster', {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
     },
+    quantity: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
+    },
+    pack_size: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+    },
     created_by: {
         type: DataTypes.BIGINT,
     },

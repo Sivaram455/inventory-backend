@@ -1,4 +1,5 @@
 const { Role, RolePrivilege } = require('../models');
+const { clearPrivilegeCache } = require('../middleware/privilegeMiddleware');
 
 class RoleService {
   async createRole(data, userId) {
@@ -19,6 +20,7 @@ class RoleService {
         await RolePrivilege.bulkCreate(privs);
       }
 
+      clearPrivilegeCache();
       return role;
     } catch (error) {
       throw error;
@@ -85,6 +87,7 @@ class RoleService {
         await RolePrivilege.bulkCreate(privs);
       }
 
+      clearPrivilegeCache(roleId);
       return role;
     } catch (error) {
       throw error;
@@ -98,6 +101,7 @@ class RoleService {
 
       await RolePrivilege.destroy({ where: { role_id: roleId } });
       await role.destroy();
+      clearPrivilegeCache(roleId);
       return { message: 'Role deleted successfully' };
     } catch (error) {
       throw error;

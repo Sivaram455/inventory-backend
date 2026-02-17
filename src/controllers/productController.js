@@ -125,7 +125,8 @@ exports.getProducts = async (req, res) => {
         const products = await ProductMaster.findAll({
             include: [
                 { model: ProductCategory, as: 'category' },
-                { model: Unit, as: 'weight_unit' }
+                { model: Unit, as: 'weight_unit' },
+                { model: Unit, as: 'pack_size_unit' }
             ]
         });
         res.json(products);
@@ -144,7 +145,9 @@ exports.createProduct = async (req, res) => {
             'weight_unit_id', 'product_length_unit_id', 'product_width_unit_id',
             'threshold_unit_id', 'product_weight', 'product_length',
             'product_width', 'min_threshold', 'package_length_cm',
-            'package_width_cm', 'package_height_cm'
+            'threshold_unit_id', 'product_weight', 'product_length',
+            'product_width', 'min_threshold', 'package_length_cm',
+            'package_width_cm', 'package_height_cm', 'quantity', 'pack_size'
         ];
 
         numericFields.forEach(field => {
@@ -175,7 +178,9 @@ exports.updateProduct = async (req, res) => {
             'weight_unit_id', 'product_length_unit_id', 'product_width_unit_id',
             'threshold_unit_id', 'product_weight', 'product_length',
             'product_width', 'min_threshold', 'package_length_cm',
-            'package_width_cm', 'package_height_cm'
+            'threshold_unit_id', 'product_weight', 'product_length',
+            'product_width', 'min_threshold', 'package_length_cm',
+            'package_width_cm', 'package_height_cm', 'quantity', 'pack_size'
         ];
 
         numericFields.forEach(field => {
@@ -254,6 +259,7 @@ exports.uploadProductExcel = async (req, res) => {
                 const widthUnitId = await resolveUnitId(keys.widthunit);
                 const weightUnitId = await resolveUnitId(keys.weightunit);
                 const thresholdUnitId = await resolveUnitId(keys.thresholdunit || keys.unit);
+                const packSizeUnitId = await resolveUnitId(keys.packsize || keys.packunit || keys.packsizeunit);
 
                 const productData = {
                     product_make: keys.make || keys.brand || '',
@@ -275,7 +281,11 @@ exports.uploadProductExcel = async (req, res) => {
                     gst_slab: String(keys.gst || keys.gstslab || ''),
                     package_length_cm: parseFloat(keys.packagel || 0) || null,
                     package_width_cm: parseFloat(keys.packagew || 0) || null,
+                    package_length_cm: parseFloat(keys.packagel || 0) || null,
+                    package_width_cm: parseFloat(keys.packagew || 0) || null,
                     package_height_cm: parseFloat(keys.packageh || 0) || null,
+                    quantity: parseFloat(keys.quantity || 0) || null,
+                    pack_size: packSizeUnitId,
                 };
 
                 const [product, created] = await ProductMaster.findOrCreate({
@@ -322,7 +332,9 @@ exports.getSampleExcel = async (req, res) => {
             'SKU', 'Product Name', 'Category', 'Make', 'Color',
             'Length', 'Length Unit', 'Width', 'Width Unit',
             'Weight', 'Weight Unit', 'Threshold', 'Threshold Unit',
-            'GST Slab', 'HSN Code', 'Package L', 'Package W', 'Package H'
+            'Weight', 'Weight Unit', 'Threshold', 'Threshold Unit',
+            'GST Slab', 'HSN Code', 'Package L', 'Package W', 'Package H',
+            'Quantity', 'Pack Size Unit'
         ];
         mainSheet.addRow(headers);
 
@@ -339,7 +351,8 @@ exports.getSampleExcel = async (req, res) => {
             'SKU001', 'Gloss PPF X1', categories[0]?.category_name || '', '3M', 'Clear',
             15, units[0]?.name || 'Meter', 1.52, units[0]?.name || 'Meter',
             12, 'Kilogram', 5, units[0]?.name || 'Meter',
-            '18%', '3919', 155, 20, 20
+            '18%', '3919', 155, 20, 20,
+            100, units[0]?.name || 'Meter'
         ]);
 
         // Setup Reference Data sheet (hidden or last)
@@ -357,8 +370,8 @@ exports.getSampleExcel = async (req, res) => {
                 allowBlank: true,
                 formulae: [catRange]
             };
-            // Units Dropdowns (Columns G, I, K, M)
-            ['G', 'I', 'K', 'M'].forEach(col => {
+            // Units Dropdowns (Columns G, I, K, M, T)
+            ['G', 'I', 'K', 'M', 'T'].forEach(col => {
                 mainSheet.getCell(`${col}${i}`).dataValidation = {
                     type: 'list',
                     allowBlank: true,

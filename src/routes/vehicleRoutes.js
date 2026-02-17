@@ -18,16 +18,18 @@ const optionalAuth = (req, res, next) => {
     next();
 };
 
+const { checkPrivilege } = require('../middleware/privilegeMiddleware');
+
 // Vehicle Routes
-router.get('/vehicles', optionalAuth, vehicleController.getAllVehicles);
-router.get('/vehicles/active', optionalAuth, vehicleController.getActiveVehicles);
-router.post('/vehicles', authMiddleware, vehicleController.createVehicle);
-router.put('/vehicles/:id', authMiddleware, vehicleController.updateVehicle);
-router.delete('/vehicles/:id', authMiddleware, vehicleController.deleteVehicle);
+router.get('/vehicles', authMiddleware, checkPrivilege('Vehicle Type', 'view'), vehicleController.getAllVehicles);
+router.get('/vehicles/active', authMiddleware, checkPrivilege('Vehicle Type', 'view'), vehicleController.getActiveVehicles);
+router.post('/vehicles', authMiddleware, checkPrivilege('Vehicle Type', 'add'), vehicleController.createVehicle);
+router.put('/vehicles/:id', authMiddleware, checkPrivilege('Vehicle Type', 'edit'), vehicleController.updateVehicle);
+router.delete('/vehicles/:id', authMiddleware, checkPrivilege('Vehicle Type', 'delete'), vehicleController.deleteVehicle);
 
 // Vehicle Usage Routes
-router.get('/usage', optionalAuth, vehicleController.getAllVehicleUsage);
-router.get('/usage/vehicle/:vehicleId', optionalAuth, vehicleController.getVehicleUsageByVehicle);
-router.post('/usage', authMiddleware, vehicleController.createVehicleUsage);
+router.get('/usage', authMiddleware, checkPrivilege('Vehicle Usage', 'view'), vehicleController.getAllVehicleUsage);
+router.get('/usage/vehicle/:vehicleId', authMiddleware, checkPrivilege('Vehicle Usage', 'view'), vehicleController.getVehicleUsageByVehicle);
+router.post('/usage', authMiddleware, checkPrivilege('Vehicle Usage', 'add'), vehicleController.createVehicleUsage);
 
 module.exports = router;
