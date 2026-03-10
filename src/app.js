@@ -35,9 +35,17 @@ app.use('/api/inventory', inventoryRoutes);
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const transferRoutes = require('./routes/transferRoutes');
 const vehicleRoutes = require('./routes/vehicleRoutes');
+const hrRoutes = require('./routes/hrRoutes');
+const expenseRoutes = require('./routes/expenseRoutes');
+const bankingRoutes = require('./routes/bankingRoutes');
+const vendorRoutes = require('./routes/vendorRoutes');
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/transfers', transferRoutes);
 app.use('/api/vehicles', vehicleRoutes);
+app.use('/api/hr', hrRoutes);
+app.use('/api/expenses', expenseRoutes);
+app.use('/api/banking', bankingRoutes);
+app.use('/api/vendors', vendorRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -56,11 +64,38 @@ app.get('/api/seed-force', async (req, res) => {
 
     await sequelize.sync({ force: true });
 
-    const adminR = await Role.create({ role_name: 'admin' });
-    const managerR = await Role.create({ role_name: 'manager' });
+    const adminR = await Role.create({ role_name: 'admin', created_by: 1 });
+    const managerR = await Role.create({ role_name: 'manager', created_by: 1 });
+    const staffR = await Role.create({ role_name: 'staff', created_by: 1 });
+
+    const modules = [
+      { name: 'Dashboard', group: 'GENERAL', sortOrder: 1 },
+      { name: 'Categories', group: 'INVENTORY', sortOrder: 2 },
+      { name: 'Units', group: 'INVENTORY', sortOrder: 3 },
+      { name: 'Product Master', group: 'INVENTORY', sortOrder: 4 },
+      { name: 'Inward Register', group: 'INVENTORY', sortOrder: 5 },
+      { name: 'Outward Register', group: 'INVENTORY', sortOrder: 6 },
+      { name: 'Stock Transfer', group: 'INVENTORY', sortOrder: 7 },
+      { name: 'Master Inventory', group: 'INVENTORY', sortOrder: 8 },
+      { name: 'Remnant Calc', group: 'INVENTORY', sortOrder: 9 },
+      { name: 'Vehicle Usage', group: 'OPERATIONS', sortOrder: 10 },
+      { name: 'Staff Master', group: 'ADMIN', sortOrder: 11 },
+      { name: 'Payroll', group: 'ADMIN', sortOrder: 12 },
+      { name: 'Leave Management', group: 'ADMIN', sortOrder: 13 },
+      { name: 'Petty Cash', group: 'ACCOUNTS', sortOrder: 14 },
+      { name: 'Corporate Banks', group: 'ACCOUNTS', sortOrder: 15 },
+      { name: 'Beneficiaries', group: 'ACCOUNTS', sortOrder: 16 },
+    ];
+
+    for (const mod of modules) {
+      await RolePrivilege.create({
+        role_id: adminR.id, module: mod.name, module_group: mod.group, sort_order: mod.sortOrder,
+        can_view: true, can_add: true, can_edit: true, can_delete: true
+      });
+    }
 
     const admin = await User.create({
-      name: 'Admin User', email: 'admin@inventory.com', password: 'Admin@123',
+      name: 'Super Admin', email: 'admin@inventory.com', password: 'Admin@123',
       mobile_number: '9876543210', role_id: adminR.id, status: 'ACTIVE'
     });
 

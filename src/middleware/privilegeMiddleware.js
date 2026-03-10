@@ -62,12 +62,14 @@ const checkPrivilege = (module, action) => {
         try {
             // Skip privilege check for super admin and admin
             const userRole = req.user?.role?.toLowerCase();
+            const roleId = req.user?.role_id;
+
             if (userRole === 'super admin' || userRole === 'admin') {
                 return next();
             }
 
-            const roleId = req.user?.role_id;
             if (!roleId) {
+                console.warn(`[Privilege Check] Access Denied: User ${req.user?.email} has no role_id. Role in JWT: ${userRole}`);
                 return res.status(403).json({
                     success: false,
                     message: 'Access denied: No role assigned',
@@ -78,6 +80,7 @@ const checkPrivilege = (module, action) => {
             const modulePrivs = privileges[module];
 
             if (!modulePrivs) {
+                console.warn(`[Privilege Check] Access Denied: Module "${module}" not configured for Role ID ${roleId}. User: ${req.user?.email}`);
                 return res.status(403).json({
                     success: false,
                     message: `Access denied: No privileges configured for module "${module}"`,

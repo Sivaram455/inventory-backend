@@ -76,7 +76,4 @@ const RolePrivilege = sequelize.define('RolePrivilege', {
   ],
 });
 
-RolePrivilege.belongsTo(Role, { foreignKey: 'role_id' });
-Role.hasMany(RolePrivilege, { foreignKey: 'role_id', as: 'privileges' });
-
 module.exports = RolePrivilege;
