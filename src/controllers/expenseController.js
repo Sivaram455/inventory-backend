@@ -92,10 +92,14 @@ class ExpenseController {
     // Get all entries (with optional month, category, and type filters)
     async getAll(req, res) {
         try {
-            const { month, category, entry_type } = req.query;
+            const { month, category, entry_type, startDate, endDate } = req.query;
             const where = {};
 
-            if (month) {
+            if (startDate && endDate) {
+                where.expense_date = {
+                    [Op.between]: [startDate, endDate]
+                };
+            } else if (month) {
                 const [year, m] = month.split('-').map(Number);
                 const lastDay = new Date(year, m, 0).getDate();
                 where.expense_date = {
