@@ -9,7 +9,7 @@ const Beneficiary = sequelize.define('Beneficiary', {
     },
     beneficiary_type: {
         type: DataTypes.STRING(20),
-        allowNull: false
+        allowNull: false,
     },
     beneficiary_name: {
         type: DataTypes.STRING(150),
@@ -45,11 +45,11 @@ const Beneficiary = sequelize.define('Beneficiary', {
     },
     nature_of_account: {
         type: DataTypes.STRING(50),
-        allowNull: true
+        allowNull: false
     },
     account_type: {
         type: DataTypes.STRING(50),
-        allowNull: true
+        allowNull: false
     },
     status: {
         type: DataTypes.STRING(20),

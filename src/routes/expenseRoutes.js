@@ -9,6 +9,8 @@ const upload = require('../middleware/uploadMiddleware');
 router.use(authMiddleware);
 
 // CRUD
+router.get('/sample', checkPrivilege('Petty Cash', 'can_view'), expenseController.downloadSample);
+router.post('/upload', checkPrivilege('Petty Cash', 'can_add'), upload.single('file'), expenseController.uploadExcel);
 router.get('/', checkPrivilege('Petty Cash', 'can_view'), expenseController.getAll);
 router.get('/summary', checkPrivilege('Petty Cash', 'can_view'), expenseController.summary);
 router.get('/:id', checkPrivilege('Petty Cash', 'can_view'), expenseController.getById);

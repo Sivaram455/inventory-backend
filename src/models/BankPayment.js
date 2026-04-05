@@ -20,7 +20,7 @@ const BankPayment = sequelize.define('BankPayment', {
         allowNull: true
     },
     upload_date: {
-        type: DataTypes.DATEONLY,
+        type: DataTypes.DATE,
         allowNull: false
     },
     type_of_account: {

@@ -1,11 +1,98 @@
 const { Expense } = require('../models');
 const { Op } = require('sequelize');
+const XLSX = require('xlsx');
 
 class ExpenseController {
-    // Get all expenses (with optional month filter)
+    async downloadSample(req, res) {
+        try {
+            const data = [
+                {
+                    'Date (YYYY-MM-DD)': '2024-03-01',
+                    'Entry Type (INWARD/OUTWARD)': 'INWARD',
+                    'Category': 'REPLENISHMENT',
+                    'Description': 'Cash from Main Office',
+                    'Amount': 5000,
+                    'Payment Mode': 'CASH',
+                    'Paid To / Received From': 'Admin',
+                    'Reference No': 'TXN-001'
+                },
+                {
+                    'Date (YYYY-MM-DD)': '2024-03-02',
+                    'Entry Type (INWARD/OUTWARD)': 'OUTWARD',
+                    'Category': 'OFFICE',
+                    'Description': 'Stationery items',
+                    'Amount': 450,
+                    'Payment Mode': 'CASH',
+                    'Paid To / Received From': 'Local Store',
+                    'Reference No': 'TXN-002'
+                }
+            ];
+
+            const workbook = XLSX.utils.book_new();
+            const worksheet = XLSX.utils.json_to_sheet(data);
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'PettyCashTemplate');
+
+            const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+            res.setHeader('Content-Disposition', 'attachment; filename=PettyCash_Import_Template.xlsx');
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            return res.send(buffer);
+        } catch (error) {
+            console.error('SERVER_ERROR [downloadSample]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async uploadExcel(req, res) {
+        try {
+            if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+
+            const workbook = XLSX.readFile(req.file.path);
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const data = XLSX.utils.sheet_to_json(worksheet);
+
+            // Clean up uploaded file after reading
+            const fs = require('fs');
+            fs.unlink(req.file.path, (err) => {
+                if (err) console.error('Failed to delete temp file:', err);
+            });
+
+            const entries = [];
+            for (const row of data) {
+                const date = row['Date (YYYY-MM-DD)'];
+                const type = row['Entry Type (INWARD/OUTWARD)'];
+                const category = row['Category'];
+                const amount = row['Amount'];
+
+                if (!date || !type || !amount) continue;
+
+                entries.push({
+                    expense_date: date,
+                    entry_type: type.toUpperCase(),
+                    category: category || 'OTHER',
+                    description: row['Description'] || '',
+                    amount: parseFloat(amount),
+                    payment_mode: row['Payment Mode'] || 'CASH',
+                    paid_to: row['Paid To / Received From'] || '',
+                    reference_no: row['Reference No'] || '',
+                    created_by: req.user.id
+                });
+            }
+
+            if (entries.length === 0) return res.status(400).json({ success: false, message: 'No valid data found in file' });
+
+            await Expense.bulkCreate(entries);
+            res.status(200).json({ success: true, message: `Successfully imported ${entries.length} records` });
+        } catch (error) {
+            console.error('SERVER_ERROR [uploadExcel]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    // Get all entries (with optional month, category, and type filters)
     async getAll(req, res) {
         try {
-            const { month, category } = req.query;
+            const { month, category, entry_type } = req.query;
             const where = {};
 
             if (month) {
@@ -17,79 +104,93 @@ class ExpenseController {
             }
 
             if (category && category !== 'ALL') {
-                where.expense_category = category;
+                where.category = category;
             }
 
-            const expenses = await Expense.findAll({ where, order: [['expense_date', 'DESC'], ['id', 'DESC']] });
-            res.status(200).json({ success: true, data: expenses });
+            if (entry_type && entry_type !== 'ALL') {
+                where.entry_type = entry_type;
+            }
+
+            const entries = await Expense.findAll({ where, order: [['expense_date', 'DESC'], ['id', 'DESC']] });
+            
+            // Calculate overall balance (from all time)
+            const allTimeInward = await Expense.sum('amount', { where: { entry_type: 'INWARD' } }) || 0;
+            const allTimeOutward = await Expense.sum('amount', { where: { entry_type: 'OUTWARD' } }) || 0;
+            const currentBalance = parseFloat(allTimeInward) - parseFloat(allTimeOutward);
+
+            res.status(200).json({ 
+                success: true, 
+                data: entries,
+                balance: currentBalance
+            });
         } catch (error) {
-            console.error('SERVER_ERROR [getExpenses]:', error);
+            console.error('SERVER_ERROR [getAllEntries]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
 
-    // Get single expense
+    // Get single entry
     async getById(req, res) {
         try {
-            const expense = await Expense.findByPk(req.params.id);
-            if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
-            res.status(200).json({ success: true, data: expense });
+            const entry = await Expense.findByPk(req.params.id);
+            if (!entry) return res.status(404).json({ success: false, message: 'Record not found' });
+            res.status(200).json({ success: true, data: entry });
         } catch (error) {
-            console.error('SERVER_ERROR [getExpenseById]:', error);
+            console.error('SERVER_ERROR [getEntryById]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
 
-    // Create expense
+    // Create entry
     async create(req, res) {
         try {
-            const { expense_date, expense_category, description, amount, payment_mode, paid_to, reference_no, payment_url } = req.body;
+            const { expense_date, entry_type, category, description, amount, payment_mode, paid_to, reference_no, payment_url } = req.body;
             let image_url = null;
             if (req.file) {
                 image_url = `/uploads/${req.file.filename}`;
             }
-            const expense = await Expense.create({
-                expense_date, expense_category, description,
+            const entry = await Expense.create({
+                expense_date, entry_type: entry_type || 'OUTWARD', category, description,
                 amount, payment_mode, paid_to, reference_no, payment_url,
                 image_url,
                 created_by: req.user.id
             });
-            res.status(201).json({ success: true, data: expense });
+            res.status(201).json({ success: true, data: entry });
         } catch (error) {
-            console.error('SERVER_ERROR [createExpense]:', error);
+            console.error('SERVER_ERROR [createEntry]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
 
-    // Update expense
+    // Update entry
     async update(req, res) {
         try {
-            const expense = await Expense.findByPk(req.params.id);
-            if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
+            const entry = await Expense.findByPk(req.params.id);
+            if (!entry) return res.status(404).json({ success: false, message: 'Record not found' });
 
             const updateData = { ...req.body };
             if (req.file) {
                 updateData.image_url = `/uploads/${req.file.filename}`;
             }
 
-            await expense.update({ ...updateData, updated_by: req.user.id });
-            res.status(200).json({ success: true, data: expense });
+            await entry.update({ ...updateData, updated_by: req.user.id });
+            res.status(200).json({ success: true, data: entry });
         } catch (error) {
-            console.error('SERVER_ERROR [updateExpense]:', error);
+            console.error('SERVER_ERROR [updateEntry]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
 
-    // Delete expense
+    // Delete entry
     async delete(req, res) {
         try {
-            const expense = await Expense.findByPk(req.params.id);
-            if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
+            const entry = await Expense.findByPk(req.params.id);
+            if (!entry) return res.status(404).json({ success: false, message: 'Record not found' });
 
-            await expense.destroy();
-            res.status(200).json({ success: true, message: 'Expense deleted' });
+            await entry.destroy();
+            res.status(200).json({ success: true, message: 'Record deleted' });
         } catch (error) {
-            console.error('SERVER_ERROR [deleteExpense]:', error);
+            console.error('SERVER_ERROR [deleteEntry]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
@@ -108,28 +209,43 @@ class ExpenseController {
                 };
             }
 
-            const expenses = await Expense.findAll({ where });
-            const total = expenses.reduce((s, e) => s + parseFloat(e.amount || 0), 0);
+            const entries = await Expense.findAll({ where });
+            
+            const totalInward = entries.filter(e => e.entry_type === 'INWARD').reduce((s, e) => s + parseFloat(e.amount || 0), 0);
+            const totalOutward = entries.filter(e => e.entry_type === 'OUTWARD').reduce((s, e) => s + parseFloat(e.amount || 0), 0);
 
-            // Category breakdown
+            // Category breakdown (only for outwards by default, but let's include both)
             const categoryMap = {};
-            expenses.forEach(e => {
-                const cat = e.expense_category || 'OTHER';
-                categoryMap[cat] = (categoryMap[cat] || 0) + parseFloat(e.amount || 0);
+            entries.forEach(e => {
+                const cat = e.category || 'OTHER';
+                if (!categoryMap[cat]) categoryMap[cat] = { inward: 0, outward: 0 };
+                if (e.entry_type === 'INWARD') categoryMap[cat].inward += parseFloat(e.amount || 0);
+                else categoryMap[cat].outward += parseFloat(e.amount || 0);
             });
 
             // Payment mode breakdown
             const modeMap = {};
-            expenses.forEach(e => {
+            entries.forEach(e => {
                 const mode = e.payment_mode || 'OTHER';
-                modeMap[mode] = (modeMap[mode] || 0) + parseFloat(e.amount || 0);
+                if (!modeMap[mode]) modeMap[mode] = { inward: 0, outward: 0 };
+                if (e.entry_type === 'INWARD') modeMap[mode].inward += parseFloat(e.amount || 0);
+                else modeMap[mode].outward += parseFloat(e.amount || 0);
             });
+
+            // Overall balance
+            const allTimeInward = await Expense.sum('amount', { where: { entry_type: 'INWARD' } }) || 0;
+            const allTimeOutward = await Expense.sum('amount', { where: { entry_type: 'OUTWARD' } }) || 0;
+            const currentBalance = parseFloat(allTimeInward) - parseFloat(allTimeOutward);
 
             res.status(200).json({
                 success: true,
                 data: {
-                    total,
-                    count: expenses.length,
+                    totalInward,
+                    totalOutward,
+                    monthBalance: totalInward - totalOutward,
+                    currentBalance,
+                    countOutward: entries.filter(e => e.entry_type === 'OUTWARD').length,
+                    countInward: entries.filter(e => e.entry_type === 'INWARD').length,
                     byCategory: categoryMap,
                     byPaymentMode: modeMap
                 }

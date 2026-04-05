@@ -1,4 +1,5 @@
 const { CorporateBank, Beneficiary, BankPayment } = require('../models');
+const { Op } = require('sequelize');
 const xlsx = require('xlsx');
 const ExcelJS = require('exceljs');
 
@@ -40,6 +41,34 @@ exports.deleteBank = async (req, res, next) => {
     } catch (err) {
         next(err);
     }
+};
+
+const validateBeneficiaryData = (data, isUpdate = false) => {
+    const { beneficiary_type, beneficiary_name, bank_account_no, ifsc_code, nature_of_account, account_type, pan, mobile_no } = data;
+
+    // For updates, we only validate fields if they are provided
+    if (!isUpdate) {
+        if (!beneficiary_name || !bank_account_no || !ifsc_code || !nature_of_account || !account_type || !beneficiary_type) {
+            throw new Error('Mandatory fields missing (Type, Account Name, Account Number, IFSC Code, Nature of Account, Account Type)');
+        }
+    }
+
+    // Mobile Number: 10 digits only (only validate if provided)
+    if (mobile_no && !/^\d{10}$/.test(mobile_no)) {
+        throw new Error('Mobile number must be exactly 10 digits only (no spaces, special characters, or country codes)');
+    }
+
+    // PAN: 10 characters, alphanumeric (only validate if provided)
+    if (pan && !/^[A-Z0-9]{10}$/i.test(pan)) {
+        throw new Error('PAN card must be exactly 10 characters and strictly alphanumeric with no spaces or special characters');
+    }
+
+    // Account Number: Alphanumeric only (only validate if provided)
+    if (bank_account_no && !/^[A-Z0-9]+$/i.test(bank_account_no)) {
+        throw new Error('Account number must be alphanumeric only (no spaces or special characters)');
+    }
+
+    return true;
 };
 
 function normalizeHeader(h) {
@@ -127,9 +156,13 @@ exports.getBeneficiaries = async (req, res, next) => {
 
 exports.createBeneficiary = async (req, res, next) => {
     try {
+        validateBeneficiaryData(req.body);
         const ben = await Beneficiary.create({ ...req.body, created_by: req.user.id });
         res.status(201).json({ success: true, data: ben });
     } catch (err) {
+        if (err.message.includes('Mandatory fields') || err.message.includes('digits only') || err.message.includes('strictly alphanumeric') || err.message.includes('alphanumeric only')) {
+            return res.status(400).json({ success: false, message: err.message });
+        }
         next(err);
     }
 };
@@ -138,9 +171,14 @@ exports.updateBeneficiary = async (req, res, next) => {
     try {
         const ben = await Beneficiary.findByPk(req.params.id);
         if (!ben) return res.status(404).json({ success: false, message: 'Beneficiary not found' });
+
+        validateBeneficiaryData(req.body, true);
         await ben.update({ ...req.body, updated_by: req.user.id });
         res.json({ success: true, data: ben });
     } catch (err) {
+        if (err.message.includes('Mandatory fields') || err.message.includes('digits only') || err.message.includes('strictly alphanumeric') || err.message.includes('alphanumeric only')) {
+            return res.status(400).json({ success: false, message: err.message });
+        }
         next(err);
     }
 };
@@ -185,13 +223,23 @@ exports.uploadBeneficiariesExcel = async (req, res) => {
                     continue;
                 }
 
-                // Check for duplicates based on standard name + account Number
-                const existing = await Beneficiary.findOne({ where: { beneficiary_name: benName, bank_account_no: accNumber } });
+                // Check for duplicates based on standard account number to prevent overwriting updated data
+                const existing = await Beneficiary.findOne({ where: { bank_account_no: accNumber } });
                 if (existing) {
                     duplicates++;
-                    errors.push(`Duplicate entry found for Beneficiary ${benName} with Account ${accNumber}`);
-                    continue; // skip
+                    // Skip existing entries to prevent data loss (don't overwrite manual updates)
+                    continue;
                 }
+
+                validateBeneficiaryData({
+                    beneficiary_name: benName,
+                    bank_account_no: accNumber,
+                    ifsc_code: ifsc,
+                    nature_of_account: keys.natureofaccount || keys.nature || '',
+                    account_type: keys.accounttype || '',
+                    pan: keys.pan || '',
+                    mobile_no: String(keys.mobileno || keys.mobile || keys.contact || '')
+                });
 
                 await Beneficiary.create({
                     beneficiary_type: benType,
@@ -266,21 +314,20 @@ exports.createPayment = async (req, res, next) => {
 
         const uploadDate = upload_date ? new Date(upload_date) : new Date();
 
-        // Duplicate Check
+        // Duplicate Check - Improved to allow retries of failed payments
         const existing = await BankPayment.findOne({
             where: {
                 credit_account_number: beneficiary.bank_account_no,
                 amount: parseFloat(amount),
-                upload_date: uploadDate,
                 sequential_number: sequential_number || null,
-                payment_remarks: payment_remarks || null
+                payment_status: { [Op.ne]: 'failed' }
             }
         });
 
         if (existing) {
             return res.status(400).json({
                 success: false,
-                message: `Duplicate Payment Detected: A payment of ₹${amount} to this account already exists for this date.`
+                message: `Duplicate Payment: A non-failed payment with these details already exists.`
             });
         }
 
@@ -288,7 +335,8 @@ exports.createPayment = async (req, res, next) => {
             beneficiary_id: beneficiary.id,
             batch_id: `MANUAL-${Date.now()}`,
             file_name: 'Manual Entry',
-            upload_date: upload_date ? new Date(upload_date) : new Date(),
+            upload_date: new Date(), // Always actual upload timestamp
+            reference_number: req.body.reference_number || null,
             type_of_account: beneficiary.account_type || null,
             amount: parseFloat(amount),
             vendor_name: beneficiary.beneficiary_name,
@@ -318,7 +366,7 @@ exports.uploadPaymentsExcel = async (req, res) => {
 
         if (!rows.length) return res.status(400).json({ message: 'No rows found in Excel' });
 
-        const batchId = `BATCH-${Date.now()}`;
+        const defaultBatchId = `BATCH-${Date.now()}`;
         const fileName = req.file.originalname;
 
         let created = 0, failed = 0;
@@ -328,6 +376,7 @@ exports.uploadPaymentsExcel = async (req, res) => {
             try {
                 const keys = Object.keys(r).reduce((acc, k) => { acc[normalizeHeader(k)] = r[k]; return acc; }, {});
 
+                const rowBatchId = String(keys.batchid || keys.batch_id || keys.batchnumber || keys.id || defaultBatchId).trim();
                 const benAcc = String(keys.creditaccountnumber || keys.accountnumber || keys.bankaccountno || '').trim();
                 const amount = parseFloat(keys.amount);
 
@@ -344,32 +393,34 @@ exports.uploadPaymentsExcel = async (req, res) => {
                     continue;
                 }
 
-                const uploadDate = keys.uploaddate ? new Date(keys.uploaddate) : new Date();
+                const uploadDate = new Date(); // Actual upload timestamp
                 const seqNo = keys.sequentialnumber || null;
+                const refNo = keys.referencenumber || keys.refno || null;
                 const remarks = keys.paymentremarks || null;
 
-                // Duplicate Check
+                // Duplicate Check: Allow retry if previous attempt FAILED
                 const existing = await BankPayment.findOne({
                     where: {
+                        batch_id: rowBatchId,
+                        sequential_number: seqNo,
                         credit_account_number: benAcc,
                         amount: amount,
-                        upload_date: uploadDate,
-                        sequential_number: seqNo,
-                        payment_remarks: remarks
+                        payment_status: { [Op.ne]: 'failed' }
                     }
                 });
 
                 if (existing) {
                     failed++;
-                    errors.push(`Duplicate Payment: Row with Account ${benAcc} and Amount ${amount} already exists for this date.`);
+                    errors.push(`Duplicate Payment: Record exists in Batch ${rowBatchId}. To retry a failed payment, ensure its status is "failed".`);
                     continue;
                 }
 
                 await BankPayment.create({
                     beneficiary_id: beneficiary.id,
-                    batch_id: batchId,
+                    batch_id: rowBatchId,
                     file_name: fileName,
-                    upload_date: keys.uploaddate ? new Date(keys.uploaddate) : new Date(),
+                    upload_date: uploadDate,
+                    reference_number: refNo,
                     type_of_account: keys.typeofaccount || beneficiary.account_type || null,
                     amount: amount,
                     vendor_name: keys.vendorname || beneficiary.beneficiary_name,
@@ -377,11 +428,11 @@ exports.uploadPaymentsExcel = async (req, res) => {
                     ifsc_code: keys.ifsccode || beneficiary.ifsc_code,
                     nature_of_account: keys.natureofacc || beneficiary.nature_of_account || null,
                     email: keys.emailaddress || keys.email || beneficiary.email,
-                    vendor_contact_number: keys.vendorcontactnumber || beneficiary.mobile_no,
+                    vendor_contact_number: String(keys.vendorcontactnumber || beneficiary.mobile_no || ''),
                     payment_remarks: keys.paymentremarks || null,
                     debit_account_number: String(keys.debitaccountnumber || ''),
-                    sequential_number: keys.sequentialnumber || null,
-                    payment_status: keys.paymentstatus || 'draft',
+                    sequential_number: seqNo,
+                    payment_status: 'draft', // Forced to draft regardless of Excel 'status' column
                     payment_declined_reason: keys.paymentdeclinedreason || null,
                     utr_number: keys.utrno || null,
                     processed_date: keys.processeddate ? new Date(keys.processeddate) : null,
@@ -395,7 +446,7 @@ exports.uploadPaymentsExcel = async (req, res) => {
             }
         }
 
-        res.json({ success: true, message: 'Payment bulk upload complete', stats: { batch_id: batchId, created, failed, errors } });
+        res.json({ success: true, message: 'Payment bulk upload complete', stats: { default_batch_id: defaultBatchId, created, failed, errors } });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Bulk upload failed', error: err.message });
     }
@@ -407,19 +458,17 @@ exports.downloadPaymentsSample = async (req, res) => {
         const sheet = workbook.addWorksheet('Payments');
 
         const headers = [
-            'Type of account', 'Amount', 'Upload Date', 'Vendor name', 'Credit account number',
-            'Email address', 'Payment remarks', 'Debit account number', 'Sequential number',
-            'IFSC Code', 'Nature of acc', 'Vendor contact number', 'Payment Status',
-            'Payment Declined Reason', 'Batch ID', 'File Name', 'UTR No', 'processed Date'
+            'Batch ID', 'Type of account', 'Amount', 'Vendor name', 'Credit account number',
+            'Reference Number', 'Email address', 'Payment remarks', 'Debit account number', 'Sequential number',
+            'IFSC Code', 'Nature of acc', 'Vendor contact number'
         ];
         sheet.addRow(headers);
         sheet.getRow(1).font = { bold: true };
 
         sheet.addRow([
-            'Current', 15000.50, new Date().toISOString().split('T')[0], 'John Doe Suppliers', '112233445566',
-            'john@example.com', 'Invoice #123 Payment', '998877665544', '1',
-            'ICIC0001122', 'Savings', '9876543210', 'draft',
-            '', 'BATCH-12345', 'Manual Entry', '', ''
+            'BATCH-101', 'Current', 15000.50, 'John Doe Suppliers', '112233445566',
+            'REF-001', 'john@example.com', 'Invoice #123 Payment', '998877665544', '1',
+            'ICIC0001122', 'Savings', '9876543210'
         ]);
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -464,7 +513,7 @@ exports.exportPayments = async (req, res) => {
         const sheet = workbook.addWorksheet('Bank Payments');
 
         const headers = [
-            'Type of account', 'Amount', 'Upload Date', 'Vendor name', 'Credit account number',
+            'Type of account', 'Amount', 'Upload Date', 'Vendor name', 'Credit account number', 'Reference Number',
             'Email address', 'Payment remarks', 'Debit account number', 'Sequential number',
             'IFSC Code', 'Nature of acc', 'Vendor contact number', 'Payment Status',
             'Payment Declined Reason', 'Batch ID', 'File Name', 'UTR No', 'processed Date'
@@ -474,7 +523,7 @@ exports.exportPayments = async (req, res) => {
 
         payments.forEach(p => {
             sheet.addRow([
-                p.type_of_account, parseFloat(p.amount), p.upload_date, p.vendor_name, p.credit_account_number,
+                p.type_of_account, parseFloat(p.amount), p.upload_date, p.vendor_name, p.credit_account_number, p.reference_number,
                 p.email, p.payment_remarks, p.debit_account_number, p.sequential_number,
                 p.ifsc_code, p.nature_of_account, p.vendor_contact_number, p.payment_status,
                 p.payment_declined_reason, p.batch_id, p.file_name, p.utr_number, p.processed_date
