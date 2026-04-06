@@ -46,7 +46,7 @@ class ExpenseController {
         try {
             if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
-            const workbook = XLSX.readFile(req.file.path);
+            const workbook = XLSX.readFile(req.file.path, { cellDates: false });
             const sheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];
             const data = XLSX.utils.sheet_to_json(worksheet);
@@ -59,15 +59,50 @@ class ExpenseController {
 
             const entries = [];
             for (const row of data) {
-                const date = row['Date (YYYY-MM-DD)'];
+                const dateInput = row['Date (YYYY-MM-DD)'];
                 const type = row['Entry Type (INWARD/OUTWARD)'];
                 const category = row['Category'];
                 const amount = row['Amount'];
 
-                if (!date || !type || !amount) continue;
+                if (!dateInput || !type || !amount) continue;
+
+                let formattedDate = dateInput;
+
+                if (typeof dateInput === 'number') {
+                    const parsed = XLSX.SSF.parse_date_code(dateInput);
+                    if (parsed) {
+                        const yyyy = parsed.y;
+                        const mm = String(parsed.m).padStart(2, '0');
+                        const dd = String(parsed.d).padStart(2, '0');
+                        formattedDate = `${yyyy}-${mm}-${dd}`;
+                    } else {
+                        formattedDate = null;
+                    }
+                } else if (typeof dateInput === 'string') {
+                    const cleanStr = String(dateInput).trim();
+                    const parts = cleanStr.split(/[-/]/);
+                    if (parts.length === 3) {
+                        if (parts[0].length === 4) {
+                            formattedDate = `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+                        } else if (parts[2].length === 4) {
+                            formattedDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                        }
+                    }
+                    if (formattedDate && isNaN(new Date(formattedDate).getTime())) {
+                        formattedDate = null;
+                    }
+                }
+
+                console.log(`[UploadExcel] Raw Date: ${dateInput} | Type: ${typeof dateInput} | Formatted: ${formattedDate}`);
+
+                // If date was extremely mangled, default to today just to avoid hard crashes, or skip. 
+                // Since this is petty cash, we fallback to today.
+                if (!formattedDate || formattedDate.includes('NaN')) {
+                    formattedDate = new Date().toISOString().split('T')[0];
+                }
 
                 entries.push({
-                    expense_date: date,
+                    expense_date: formattedDate,
                     entry_type: type.toUpperCase(),
                     category: category || 'OTHER',
                     description: row['Description'] || '',
