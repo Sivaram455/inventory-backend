@@ -2,6 +2,7 @@ const express = require('express');
 const hrController = require('../controllers/hrController');
 const authMiddleware = require('../middleware/authMiddleware');
 const { checkPrivilege } = require('../middleware/privilegeMiddleware');
+const excelUploadMiddleware = require('../middleware/excelUploadMiddleware');
 
 const router = express.Router();
 
@@ -13,6 +14,8 @@ router.put('/employees/:id', authMiddleware, checkPrivilege('Staff Master', 'edi
 // Attendance Management
 router.get('/attendance', authMiddleware, checkPrivilege('Attendance', 'view'), hrController.getAttendanceByDate);
 router.post('/attendance', authMiddleware, checkPrivilege('Attendance', 'add'), hrController.markAttendance);
+router.post('/attendance/upload', authMiddleware, checkPrivilege('Attendance', 'add'), excelUploadMiddleware.single('file'), hrController.uploadAttendanceExcel);
+router.put('/attendance/:id/override', authMiddleware, checkPrivilege('Attendance', 'edit'), hrController.updateAdminOverride);
 
 // Payroll Management
 router.get('/payroll', authMiddleware, checkPrivilege('Payroll', 'view'), hrController.getPayrollByMonth);

@@ -9,6 +9,9 @@ const Attendance = sequelize.define('Attendance', {
     check_out_time: { type: DataTypes.TIME },
     working_hours: { type: DataTypes.DECIMAL(5, 2) },
     status: { type: DataTypes.STRING(50) }, // PRESENT, ABSENT, HALF_DAY, LEAVE
+    category: { type: DataTypes.DECIMAL(2, 1), defaultValue: 0 }, // 1.0, 0.5, 0.0
+    admin_approved_leave: { type: DataTypes.DECIMAL(2, 1), defaultValue: 0 }, // 1.0, 0.5, 0.0
+    is_admin_approved: { type: DataTypes.BOOLEAN, defaultValue: false },
     remarks: { type: DataTypes.STRING(255) },
 }, {
     tableName: 'attendance',

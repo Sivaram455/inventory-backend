@@ -10,6 +10,10 @@ const Payroll = sequelize.define('Payroll', {
     allowances: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
     deductions: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
     tax: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+    present_days: { type: DataTypes.DECIMAL(4, 1), defaultValue: 0 },
+    approved_leaves: { type: DataTypes.DECIMAL(4, 1), defaultValue: 0 },
+    paid_days: { type: DataTypes.DECIMAL(4, 1), defaultValue: 0 },
+    daily_rate: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
     net_salary: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
     payment_status: { type: DataTypes.STRING(50) }, // PAID / PENDING
     payment_date: { type: DataTypes.DATEONLY },

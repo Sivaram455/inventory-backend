@@ -1,5 +1,7 @@
 const { Employee, Attendance, Payroll, Leave, User } = require('../models');
 const { Op } = require('sequelize');
+const xlsx = require('xlsx');
+
 
 class HRController {
     // Employee Management
@@ -76,6 +78,8 @@ class HRController {
         try {
             const { attendance_date, marks } = req.body;
             const results = [];
+            const statusToPresence = { 'PRESENT': 1.0, 'HALF_DAY': 0.5, 'ABSENT': 0.0, 'LEAVE': 0.0 };
+
             for (const mark of marks) {
                 const [record, created] = await Attendance.findOrCreate({
                     where: { employee_id: mark.employee_id, attendance_date },
@@ -96,7 +100,10 @@ class HRController {
     async getAttendanceByDate(req, res, next) {
         try {
             const { date } = req.query;
-            const records = await Attendance.findAll({ where: { attendance_date: date } });
+            const records = await Attendance.findAll({
+                where: { attendance_date: date },
+                include: [{ model: Employee, include: [{ model: User, attributes: ['name'] }] }]
+            });
             res.status(200).json({ success: true, data: records });
         } catch (error) {
             console.error('SERVER_ERROR [getAttendanceByDate]:', error);
@@ -104,101 +111,162 @@ class HRController {
         }
     }
 
+    async uploadAttendanceExcel(req, res, next) {
+        try {
+            if (!req.file) return res.status(400).json({ message: 'Excel file is required' });
+
+            const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const rows = xlsx.utils.sheet_to_json(sheet);
+
+            const results = [];
+            for (const row of rows) {
+                const employeeCode = row.Employee_Code || row.Code || row.employee_code;
+                const date = row.Date || row.date;
+                const inTime = row.In_Time || row.InTime || row.in_time;
+                const outTime = row.Out_Time || row.OutTime || row.out_time;
+
+                if (!employeeCode || !date) continue;
+
+                const employee = await Employee.findOne({ where: { employee_code: String(employeeCode) } });
+                if (!employee) continue;
+
+                let workingHours = 0;
+                if (inTime && outTime) {
+                    const toHours = (t) => {
+                        if (typeof t === 'number') return t * 24; // Excel serial time
+                        const [h, m] = String(t).split(':').map(Number);
+                        return h + (m / 60);
+                    };
+                    workingHours = toHours(outTime) - toHours(inTime);
+                }
+
+                let category = 0;
+                let status = 'ABSENT';
+                if (workingHours >= 8) {
+                    category = 1.0;
+                    status = 'PRESENT';
+                } else if (workingHours >= 4) {
+                    category = 0.5;
+                    status = 'HALF_DAY';
+                }
+
+                const [record, created] = await Attendance.findOrCreate({
+                    where: { employee_id: employee.id, attendance_date: date },
+                    defaults: {
+                        check_in_time: String(inTime),
+                        check_out_time: String(outTime),
+                        working_hours: Math.round(workingHours * 100) / 100,
+                        status
+                    }
+                });
+
+                if (!created) {
+                    await record.update({
+                        check_in_time: String(inTime),
+                        check_out_time: String(outTime),
+                        working_hours: Math.round(workingHours * 100) / 100,
+                        status
+                    });
+                }
+                results.push(record);
+            }
+            res.status(200).json({ success: true, count: results.length });
+        } catch (error) {
+            console.error('SERVER_ERROR [uploadAttendanceExcel]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async updateAdminOverride(req, res, next) {
+        try {
+            const { id } = req.params;
+            const { admin_approved_leave, remarks } = req.body;
+
+            const attendance = await Attendance.findByPk(id);
+            if (!attendance) return res.status(404).json({ message: 'Attendance record not found' });
+
+            await attendance.update({
+                admin_approved_leave: parseFloat(admin_approved_leave) || 0,
+                is_admin_approved: true,
+                remarks: remarks || attendance.remarks
+            });
+            res.status(200).json({ success: true, data: attendance });
+        } catch (error) {
+            console.error('SERVER_ERROR [updateAdminOverride]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+
     // Payroll Management
     async generatePayroll(req, res, next) {
         try {
-            const { payroll_month, employee_ids, hra, da, pf, tax } = req.body;
+            const { payroll_month, employee_ids } = req.body;
             const [year, month] = payroll_month.split('-').map(Number);
-            const lastDay = new Date(year, month, 0).getDate();
+            const daysInMonth = new Date(year, month, 0).getDate();
 
-            // Calculate working days (exclude Sundays)
-            let sundays = 0;
-            for (let day = 1; day <= lastDay; day++) {
-                if (new Date(year, month - 1, day).getDay() === 0) sundays++;
-            }
-            const workingDays = lastDay - sundays;
+            const monthStart = `${payroll_month}-01`;
+            const monthEnd = `${payroll_month}-${String(daysInMonth).padStart(2, '0')}`;
 
-            const payrolls = [];
+            const results = [];
             for (const empId of employee_ids) {
                 const employee = await Employee.findByPk(empId);
                 if (!employee) continue;
 
-                // Count approved leave days this month (excluding Sundays)
-                const monthStart = `${payroll_month}-01`;
-                const monthEnd = `${payroll_month}-${String(lastDay).padStart(2, '0')}`;
-
-                const approvedLeaves = await Leave.findAll({
+                const attendanceRecords = await Attendance.findAll({
                     where: {
                         employee_id: empId,
-                        status: 'APPROVED',
-                        [Op.or]: [
-                            { from_date: { [Op.between]: [monthStart, monthEnd] } },
-                            { to_date: { [Op.between]: [monthStart, monthEnd] } }
-                        ]
+                        attendance_date: { [Op.between]: [monthStart, monthEnd] }
                     }
                 });
 
-                let totalLeaveDays = 0;
-                approvedLeaves.forEach(leave => {
-                    let start = new Date(leave.from_date);
-                    let end = new Date(leave.to_date);
-                    let mStart = new Date(year, month - 1, 1);
-                    let mEnd = new Date(year, month - 1, lastDay);
+                let systemPresentDays = 0;
+                let adminApprovedLeaves = 0;
 
-                    let cur = new Date(start < mStart ? mStart : start);
-                    let fin = new Date(end > mEnd ? mEnd : end);
-
-                    for (let d = new Date(cur); d <= fin; d.setDate(d.getDate() + 1)) {
-                        if (d.getDay() !== 0) totalLeaveDays++;
-                    }
+                attendanceRecords.forEach(rec => {
+                    const statusVal = { 'PRESENT': 1.0, 'HALF_DAY': 0.5, 'ABSENT': 0.0, 'LEAVE': 0.0 };
+                    systemPresentDays += statusVal[rec.status] ?? 0;
+                    adminApprovedLeaves += parseFloat(rec.admin_approved_leave || 0);
                 });
 
-                // 1 free paid leave per month
-                const unpaidDays = Math.max(0, totalLeaveDays - 1);
-
-                // Calculate pay
-                const basic = parseFloat(employee.basic_salary) || 0;
-                const hraVal = parseFloat(hra) || 0;
-                const daVal = parseFloat(da) || 0;
-                const pfVal = parseFloat(pf) || 0;
-                const taxVal = parseFloat(tax) || 0;
-
-                const dailyRate = basic / workingDays;
-                const leaveDeduction = dailyRate * unpaidDays;
-                const net = (basic - leaveDeduction) + hraVal + daVal - pfVal - taxVal;
+                const totalPaidDays = systemPresentDays + adminApprovedLeaves;
+                const dailyRate = (parseFloat(employee.basic_salary) || 0) / daysInMonth;
+                const salaryPayable = totalPaidDays * dailyRate;
 
                 const [record, created] = await Payroll.findOrCreate({
                     where: { employee_id: empId, payroll_month },
                     defaults: {
-                        basic_salary: basic,
-                        hra: hraVal,
-                        allowances: daVal,
-                        deductions: pfVal + leaveDeduction,
-                        tax: taxVal,
-                        net_salary: Math.max(0, net),
+                        basic_salary: employee.basic_salary,
+                        present_days: systemPresentDays,
+                        approved_leaves: adminApprovedLeaves,
+                        paid_days: totalPaidDays,
+                        daily_rate: Math.round(dailyRate * 100) / 100,
+                        net_salary: Math.round(salaryPayable * 100) / 100,
                         generated_by: req.user.id
                     }
                 });
 
                 if (!created) {
                     await record.update({
-                        basic_salary: basic,
-                        hra: hraVal,
-                        allowances: daVal,
-                        deductions: pfVal + leaveDeduction,
-                        tax: taxVal,
-                        net_salary: Math.max(0, net),
+                        basic_salary: employee.basic_salary,
+                        present_days: systemPresentDays,
+                        approved_leaves: adminApprovedLeaves,
+                        paid_days: totalPaidDays,
+                        daily_rate: Math.round(dailyRate * 100) / 100,
+                        net_salary: Math.round(salaryPayable * 100) / 100,
                         generated_by: req.user.id
                     });
                 }
-                payrolls.push(record);
+                results.push(record);
             }
-            res.status(200).json({ success: true, data: payrolls });
+            res.status(200).json({ success: true, data: results });
         } catch (error) {
             console.error('SERVER_ERROR [generatePayroll]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
+
 
     async getPayrollByMonth(req, res, next) {
         try {
