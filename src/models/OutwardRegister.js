@@ -26,6 +26,14 @@ const OutwardRegister = sequelize.define('OutwardRegister', {
     remarks: {
         type: DataTypes.TEXT,
     },
+    warehouse_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+    },
+    rack_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+    },
     vehicle_id: {
         type: DataTypes.BIGINT, // Keeping BIGINT, assuming IDs might be large. If mismatch persists, we can try INTEGER.
         allowNull: true,

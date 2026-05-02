@@ -21,6 +21,14 @@ const InwardRegister = sequelize.define('InwardRegister', {
     remarks: {
         type: DataTypes.TEXT,
     },
+    warehouse_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+    },
+    rack_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+    },
     created_by: {
         type: DataTypes.BIGINT,
     },

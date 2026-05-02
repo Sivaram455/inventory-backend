@@ -1,4 +1,4 @@
-const { sequelize, InwardRegister, InwardItem, OutwardRegister, OutwardItem, ProductItem, ProductMaster, Unit, VehicleUsage } = require('../models');
+const { sequelize, InwardRegister, InwardItem, OutwardRegister, OutwardItem, ProductItem, ProductMaster, Unit, VehicleUsage, Warehouse, WarehouseRack, WarehouseStock } = require('../models');
 const xlsx = require('xlsx');
 const ExcelJS = require('exceljs');
 const path = require('path');
@@ -50,14 +50,29 @@ exports.getAllItems = async (req, res) => {
 exports.createInward = async (req, res) => {
     const t = await sequelize.transaction();
     try {
-        const { inward_date, purchase_type, received_by, remarks, items } = req.body;
-        // items should be array of { product_id, quantity_received, unit_id, barcode, imei, batch_id, etc. }
+        const { inward_date, purchase_type, received_by, remarks, warehouse_id, rack_id, items } = req.body;
+
+        if (!inward_date) return res.status(400).json({ message: 'Inward date is required' });
+        if (!purchase_type) return res.status(400).json({ message: 'Purchase type is required' });
+        if (!received_by?.trim()) return res.status(400).json({ message: 'Received by is required' });
+        if (!items || items.length === 0) return res.status(400).json({ message: 'At least one item is required' });
+        for (const item of items) {
+            if (!item.product_id) return res.status(400).json({ message: 'Product is required for all items' });
+            if (!item.quantity_received || parseFloat(item.quantity_received) <= 0)
+                return res.status(400).json({ message: 'Valid quantity is required for all items' });
+            if (item.imei && !/^\d{15}$/.test(String(item.imei).trim()))
+                return res.status(400).json({ message: `Invalid IMEI "${item.imei}" — must be exactly 15 digits` });
+            if (item.serial_number && item.serial_number.trim().length === 0)
+                return res.status(400).json({ message: 'Serial number cannot be empty if provided' });
+        }
 
         const inward = await InwardRegister.create({
             inward_date,
             purchase_type,
             received_by,
             remarks,
+            warehouse_id: warehouse_id || null,
+            rack_id: rack_id || null,
         }, { transaction: t });
 
         for (const item of items) {
@@ -67,12 +82,13 @@ exports.createInward = async (req, res) => {
             // Assumption: If item exists, we add quantity. If not, create.
 
             let productItem = null;
-            if (item.barcode || item.imei) {
+            if (item.barcode || item.imei || item.serial_number) {
                 productItem = await ProductItem.findOne({
                     where: {
                         [sequelize.Sequelize.Op.or]: [
                             ...(item.barcode ? [{ barcode: item.barcode }] : []),
-                            ...(item.imei ? [{ imei: item.imei }] : [])
+                            ...(item.imei ? [{ imei: item.imei }] : []),
+                            ...(item.serial_number ? [{ serial_number: item.serial_number }] : [])
                         ]
                     },
                     transaction: t
@@ -83,7 +99,8 @@ exports.createInward = async (req, res) => {
                 // Update existing item
                 productItem.total_quantity = parseFloat(productItem.total_quantity) + parseFloat(item.quantity_received);
                 productItem.available_quantity = parseFloat(productItem.available_quantity) + parseFloat(item.quantity_received);
-                if (item.batch_id) productItem.batch_id = item.batch_id; // update batch if new
+                if (item.batch_id) productItem.batch_id = item.batch_id;
+                if (item.serial_number) productItem.serial_number = item.serial_number;
                 await productItem.save({ transaction: t });
             } else {
                 // Create new item
@@ -91,6 +108,7 @@ exports.createInward = async (req, res) => {
                     product_id: item.product_id,
                     barcode: item.barcode || null,
                     imei: item.imei || null,
+                    serial_number: item.serial_number || null,
                     batch_id: item.batch_id || null,
                     total_quantity: item.quantity_received,
                     available_quantity: item.quantity_received,
@@ -106,6 +124,18 @@ exports.createInward = async (req, res) => {
                 quantity_received: item.quantity_received,
                 unit_id: item.unit_id,
             }, { transaction: t });
+
+            // 3. Update WarehouseStock if warehouse_id provided
+            if (warehouse_id) {
+                const wsWhere = { warehouse_id, product_item_id: productItem.id, rack_id: rack_id || null };
+                const [ws] = await WarehouseStock.findOrCreate({
+                    where: wsWhere,
+                    defaults: { ...wsWhere, available_quantity: 0, created_by: req.user?.id },
+                    transaction: t
+                });
+                ws.available_quantity = parseFloat(ws.available_quantity) + parseFloat(item.quantity_received);
+                await ws.save({ transaction: t });
+            }
         }
 
         await t.commit();
@@ -121,8 +151,17 @@ exports.createInward = async (req, res) => {
 exports.createOutward = async (req, res) => {
     const t = await sequelize.transaction();
     try {
-        const { outward_date, vehicle_reg_no, vehicle_id, vin_no, sales_category, incharge_person, remarks, items } = req.body;
-        // items: [{ product_item_id (or barcode scan result), quantity_used, unit_id }]
+        const { outward_date, vehicle_reg_no, vehicle_id, vin_no, sales_category, incharge_person, remarks, warehouse_id, rack_id, items } = req.body;
+
+        if (!outward_date) return res.status(400).json({ message: 'Outward date is required' });
+        if (!sales_category) return res.status(400).json({ message: 'Sales category is required' });
+        if (!incharge_person?.trim()) return res.status(400).json({ message: 'Incharge person is required' });
+        if (!items || items.length === 0) return res.status(400).json({ message: 'At least one item is required' });
+        for (const item of items) {
+            if (!item.product_item_id) return res.status(400).json({ message: 'Stock item is required for all entries' });
+            if (!item.quantity_used || parseFloat(item.quantity_used) <= 0)
+                return res.status(400).json({ message: 'Valid quantity is required for all items' });
+        }
 
         const outward = await OutwardRegister.create({
             outward_date,
@@ -132,6 +171,8 @@ exports.createOutward = async (req, res) => {
             sales_category,
             incharge_person,
             remarks,
+            warehouse_id: warehouse_id || null,
+            rack_id: rack_id || null,
         }, { transaction: t });
 
         for (const item of items) {
@@ -141,7 +182,7 @@ exports.createOutward = async (req, res) => {
                 throw new Error(`Item with ID ${item.product_item_id} not found`);
             }
 
-            if (productItem.available_quantity < item.quantity_used) {
+            if (parseFloat(productItem.available_quantity) < parseFloat(item.quantity_used)) {
                 throw new Error(`Insufficient stock for item ${productItem.barcode || productItem.id}. Available: ${productItem.available_quantity}`);
             }
 
@@ -152,6 +193,24 @@ exports.createOutward = async (req, res) => {
                 productItem.status = 'USED'; // Or just leave as IN_STOCK with 0 qty depending on logic
             }
             await productItem.save({ transaction: t });
+
+            // Deduct from warehouse-specific stock if warehouse_id provided
+            if (warehouse_id) {
+                const wsWhere = { warehouse_id, product_item_id: productItem.id, rack_id: rack_id || null };
+                const ws = await WarehouseStock.findOne({ where: wsWhere, transaction: t });
+                if (ws && parseFloat(ws.available_quantity) >= parseFloat(item.quantity_used)) {
+                    // Warehouse stock record exists and has enough — deduct from it
+                    ws.available_quantity = parseFloat(ws.available_quantity) - parseFloat(item.quantity_used);
+                    await ws.save({ transaction: t });
+                } else if (!ws) {
+                    // No warehouse stock record — item was inwarded without warehouse, skip warehouse deduction
+                    // Global product_items stock already deducted above
+                } else {
+                    // Warehouse stock exists but insufficient — sync it from global then deduct
+                    ws.available_quantity = Math.max(0, parseFloat(productItem.available_quantity));
+                    await ws.save({ transaction: t });
+                }
+            }
 
             // Create OutwardItem
             await OutwardItem.create({
@@ -565,13 +624,22 @@ exports.downloadOutwardSample = async (req, res) => {
 
 exports.getInwardHistory = async (req, res) => {
     try {
-        const { ProductCategory } = require('../models'); // Import required model
+        const { ProductCategory } = require('../models');
+        const { warehouse_id } = req.query;
+
+        const registerWhere = {};
+        if (warehouse_id) registerWhere.warehouse_id = warehouse_id;
 
         const history = await InwardItem.findAll({
             include: [
                 {
                     model: InwardRegister,
-                    as: 'InwardRegister'
+                    as: 'InwardRegister',
+                    where: Object.keys(registerWhere).length ? registerWhere : undefined,
+                    include: [
+                        { model: Warehouse, as: 'warehouse' },
+                        { model: WarehouseRack, as: 'rack' }
+                    ]
                 },
                 {
                     model: ProductItem,
@@ -584,7 +652,6 @@ exports.getInwardHistory = async (req, res) => {
             order: [['created_at', 'DESC']]
         });
 
-        // Flatten for frontend
         const flattened = history.map(item => ({
             id: item.id,
             created_at: item.InwardRegister?.inward_date || item.created_at,
@@ -592,6 +659,8 @@ exports.getInwardHistory = async (req, res) => {
             supplier_name: item.InwardRegister?.received_by,
             batch_number: item.ProductItem?.batch_id,
             quantity: item.quantity_received,
+            warehouse: item.InwardRegister?.warehouse,
+            rack: item.InwardRegister?.rack,
             ProductMaster: item.ProductItem?.ProductMaster,
             Category: item.ProductItem?.ProductMaster?.category?.category_name,
             remarks: item.InwardRegister?.remarks
@@ -607,12 +676,21 @@ exports.getInwardHistory = async (req, res) => {
 exports.getOutwardHistory = async (req, res) => {
     try {
         const { VehicleType, ProductCategory } = require('../models');
+        const { warehouse_id } = req.query;
+
+        const registerWhere = {};
+        if (warehouse_id) registerWhere.warehouse_id = warehouse_id;
 
         const history = await OutwardItem.findAll({
             include: [
                 {
                     model: OutwardRegister,
-                    include: [{ model: VehicleType, as: 'Vehicle' }]
+                    where: Object.keys(registerWhere).length ? registerWhere : undefined,
+                    include: [
+                        { model: VehicleType, as: 'Vehicle' },
+                        { model: Warehouse, as: 'warehouse' },
+                        { model: WarehouseRack, as: 'rack' }
+                    ]
                 },
                 {
                     model: ProductItem,
@@ -629,12 +707,14 @@ exports.getOutwardHistory = async (req, res) => {
             id: item.id,
             created_at: item.OutwardRegister?.outward_date || item.created_at,
             sales_category: item.OutwardRegister?.sales_category,
-            client_name: item.OutwardRegister?.incharge_person, // incharge_person used as client/destination
+            client_name: item.OutwardRegister?.incharge_person,
             quantity: item.quantity_used,
+            warehouse: item.OutwardRegister?.warehouse,
+            rack: item.OutwardRegister?.rack,
             ProductItem: item.ProductItem,
-            Category: item.ProductItem?.ProductMaster?.category?.category_name, // Fixed accessor
+            Category: item.ProductItem?.ProductMaster?.category?.category_name,
             Vehicle: item.OutwardRegister?.Vehicle,
-            challan_number: item.OutwardRegister?.remarks, // Using remarks or if challan exists (not in model currently)
+            challan_number: item.OutwardRegister?.remarks,
             remarks: item.OutwardRegister?.remarks
         }));
 

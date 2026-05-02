@@ -19,6 +19,10 @@ const ProductItem = sequelize.define('ProductItem', {
         type: DataTypes.STRING(100),
         unique: true,
     },
+    serial_number: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+    },
     batch_id: {
         type: DataTypes.STRING(100),
     },

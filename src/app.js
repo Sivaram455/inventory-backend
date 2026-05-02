@@ -39,6 +39,8 @@ const hrRoutes = require('./routes/hrRoutes');
 const expenseRoutes = require('./routes/expenseRoutes');
 const bankingRoutes = require('./routes/bankingRoutes');
 const vendorRoutes = require('./routes/vendorRoutes');
+const warehouseRoutes = require('./routes/warehouseRoutes');
+const serviceCatalogRoutes = require('./routes/serviceCatalogRoutes');
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/transfers', transferRoutes);
 app.use('/api/vehicles', vehicleRoutes);
@@ -46,6 +48,8 @@ app.use('/api/hr', hrRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/banking', bankingRoutes);
 app.use('/api/vendors', vendorRoutes);
+app.use('/api/warehouses', warehouseRoutes);
+app.use('/api/service-catalog', serviceCatalogRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
