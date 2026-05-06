@@ -227,16 +227,29 @@ exports.uploadProductExcel = async (req, res) => {
         }
 
         const wb = xlsx.read(req.file.buffer, { type: 'buffer' });
+        
+        if (!wb.SheetNames || wb.SheetNames.length === 0) {
+            await t.rollback();
+            return res.status(400).json({ message: 'No sheets found in Excel file' });
+        }
+
         const ws = wb.Sheets[wb.SheetNames[0]];
+        if (!ws) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Could not read Excel sheet' });
+        }
+
         const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
 
-        if (!rows.length) {
-            return res.status(400).json({ message: 'No rows found in Excel' });
+        if (!rows || rows.length === 0) {
+            await t.rollback();
+            return res.status(400).json({ message: 'No data rows found in Excel. Please ensure the file has data below the header row.' });
         }
 
         const stats = { created: 0, updated: 0, failed: 0, errors: [] };
 
-        for (const r of rows) {
+        for (let i = 0; i < rows.length; i++) {
+            const r = rows[i];
             try {
                 const keys = Object.keys(r).reduce((acc, k) => {
                     acc[normalizeHeader(k)] = r[k];
@@ -244,14 +257,21 @@ exports.uploadProductExcel = async (req, res) => {
                 }, {});
 
                 const sku = String(keys.sku || keys.productid || '').trim();
-                const productName = keys.productname || keys.name || '';
+                const productName = String(keys.productname || keys.name || '').trim();
+                
                 if (!sku || !productName) {
                     stats.failed++;
-                    stats.errors.push(`Row missing SKU or Product Name`);
+                    stats.errors.push(`Row ${i + 2}: Missing SKU or Product Name`);
                     continue;
                 }
 
                 const categoryId = await resolveCategoryId(keys.category || keys.categoryname);
+                if (!categoryId) {
+                    stats.failed++;
+                    stats.errors.push(`Row ${i + 2} (${sku}): Invalid or missing category`);
+                    continue;
+                }
+
                 const sub1Id = await resolveCategoryId(keys.subcategory1 || keys.sub1);
                 const sub2Id = await resolveCategoryId(keys.subcategory2 || keys.sub2);
 
@@ -259,17 +279,17 @@ exports.uploadProductExcel = async (req, res) => {
                 const widthUnitId = await resolveUnitId(keys.widthunit);
                 const weightUnitId = await resolveUnitId(keys.weightunit);
                 const thresholdUnitId = await resolveUnitId(keys.thresholdunit || keys.unit);
-                const packSizeUnitId = await resolveUnitId(keys.packsize || keys.packunit || keys.packsizeunit);
+                const packSizeUnitId = await resolveUnitId(keys.packsizeunit || keys.packsize || keys.packunit);
 
                 const productData = {
-                    product_make: keys.make || keys.brand || '',
+                    product_make: String(keys.make || keys.brand || '').trim(),
                     product_name: productName,
                     sku: sku,
-                    hsn_code: keys.hsncode || keys.hsn || '',
+                    hsn_code: String(keys.hsncode || keys.hsn || '').trim(),
                     category_id: categoryId,
                     sub_category1_id: sub1Id,
                     sub_category2_id: sub2Id,
-                    color: keys.color || '',
+                    color: String(keys.color || '').trim(),
                     product_weight: parseFloat(keys.weight || 0) || null,
                     weight_unit_id: weightUnitId,
                     product_length: parseFloat(keys.length || 0) || null,
@@ -278,9 +298,7 @@ exports.uploadProductExcel = async (req, res) => {
                     product_width_unit_id: widthUnitId,
                     min_threshold: parseFloat(keys.threshold || 0) || null,
                     threshold_unit_id: thresholdUnitId,
-                    gst_slab: String(keys.gst || keys.gstslab || ''),
-                    package_length_cm: parseFloat(keys.packagel || 0) || null,
-                    package_width_cm: parseFloat(keys.packagew || 0) || null,
+                    gst_slab: String(keys.gstslab || keys.gst || '').trim(),
                     package_length_cm: parseFloat(keys.packagel || 0) || null,
                     package_width_cm: parseFloat(keys.packagew || 0) || null,
                     package_height_cm: parseFloat(keys.packageh || 0) || null,
@@ -302,7 +320,7 @@ exports.uploadProductExcel = async (req, res) => {
                 }
             } catch (rowError) {
                 stats.failed++;
-                stats.errors.push(`Error processing row: ${rowError.message}`);
+                stats.errors.push(`Row ${i + 2}: ${rowError.message}`);
             }
         }
 
@@ -332,7 +350,6 @@ exports.getSampleExcel = async (req, res) => {
             'SKU', 'Product Name', 'Category', 'Make', 'Color',
             'Length', 'Length Unit', 'Width', 'Width Unit',
             'Weight', 'Weight Unit', 'Threshold', 'Threshold Unit',
-            'Weight', 'Weight Unit', 'Threshold', 'Threshold Unit',
             'GST Slab', 'HSN Code', 'Package L', 'Package W', 'Package H',
             'Quantity', 'Pack Size Unit'
         ];
@@ -346,31 +363,64 @@ exports.getSampleExcel = async (req, res) => {
             fgColor: { argb: 'FFE2E8F0' }
         };
 
-        // Add dummy data row
-        mainSheet.addRow([
-            'SKU001', 'Gloss PPF X1', categories[0]?.category_name || '', '3M', 'Clear',
-            15, units[0]?.name || 'Meter', 1.52, units[0]?.name || 'Meter',
-            12, 'Kilogram', 5, units[0]?.name || 'Meter',
-            '18%', '3919', 155, 20, 20,
-            100, units[0]?.name || 'Meter'
-        ]);
+        // Add sample data rows from database
+        const products = await ProductMaster.findAll({
+            include: [
+                { model: ProductCategory, as: 'category' },
+                { model: ProductCategory, as: 'sub_category1' },
+                { model: ProductCategory, as: 'sub_category2' },
+                { model: Unit, as: 'length_unit' },
+                { model: Unit, as: 'width_unit' },
+                { model: Unit, as: 'weight_unit' },
+                { model: Unit, as: 'threshold_unit' },
+                { model: Unit, as: 'pack_size_unit' }
+            ],
+            limit: 100
+        });
+
+        products.forEach(product => {
+            mainSheet.addRow([
+                product.sku || '',
+                product.product_name || '',
+                product.category?.category_name || '',
+                product.product_make || '',
+                product.color || '',
+                product.product_length || '',
+                product.length_unit?.name || '',
+                product.product_width || '',
+                product.width_unit?.name || '',
+                product.product_weight || '',
+                product.weight_unit?.name || '',
+                product.min_threshold || '',
+                product.threshold_unit?.name || '',
+                product.gst_slab || '',
+                product.hsn_code || '',
+                product.package_length_cm || '',
+                product.package_width_cm || '',
+                product.package_height_cm || '',
+                product.quantity || '',
+                product.pack_size_unit?.name || ''
+            ]);
+        });
 
         // Setup Reference Data sheet (hidden or last)
         refSheet.getColumn(1).values = ['Valid Categories', ...categories.map(c => c.category_name)];
         refSheet.getColumn(2).values = ['Valid Units', ...units.map(u => u.name)];
 
-        // Add Data Validation (Dropdowns) to the first 100 rows of main sheet
+        // Add Data Validation (Dropdowns) to rows after existing data
         const catRange = `'ReferenceData'!$A$2:$A$${categories.length + 1}`;
         const unitRange = `'ReferenceData'!$B$2:$B$${units.length + 1}`;
+        const startRow = products.length + 2;
+        const endRow = startRow + 100;
 
-        for (let i = 2; i <= 100; i++) {
+        for (let i = startRow; i <= endRow; i++) {
             // Category Dropdown (Column C)
             mainSheet.getCell(`C${i}`).dataValidation = {
                 type: 'list',
                 allowBlank: true,
                 formulae: [catRange]
             };
-            // Units Dropdowns (Columns G, I, K, M, T)
+            // Units Dropdowns (Columns G, I, K, M, N)
             ['G', 'I', 'K', 'M', 'T'].forEach(col => {
                 mainSheet.getCell(`${col}${i}`).dataValidation = {
                     type: 'list',

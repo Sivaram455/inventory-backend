@@ -29,6 +29,10 @@ const InwardRegister = sequelize.define('InwardRegister', {
         type: DataTypes.BIGINT,
         allowNull: true,
     },
+    vendor_id: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+    },
     created_by: {
         type: DataTypes.BIGINT,
     },

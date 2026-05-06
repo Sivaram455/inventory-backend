@@ -8,6 +8,7 @@ const Leave = sequelize.define('Leave', {
     from_date: { type: DataTypes.DATEONLY },
     to_date: { type: DataTypes.DATEONLY },
     total_days: { type: DataTypes.DECIMAL(4, 1) },
+    comments: { type: DataTypes.TEXT, allowNull: true },
     status: { type: DataTypes.STRING(50), defaultValue: 'APPLIED' }, // APPLIED, APPROVED, REJECTED
     applied_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
     approved_by: { type: DataTypes.BIGINT },

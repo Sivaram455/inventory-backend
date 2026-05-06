@@ -60,8 +60,8 @@ exports.createInward = async (req, res) => {
             if (!item.product_id) return res.status(400).json({ message: 'Product is required for all items' });
             if (!item.quantity_received || parseFloat(item.quantity_received) <= 0)
                 return res.status(400).json({ message: 'Valid quantity is required for all items' });
-            if (item.imei && !/^\d{15}$/.test(String(item.imei).trim()))
-                return res.status(400).json({ message: `Invalid IMEI "${item.imei}" — must be exactly 15 digits` });
+            if (item.imei && !/^[A-Za-z0-9]{1,50}$/.test(String(item.imei).trim()))
+                return res.status(400).json({ message: `Invalid IMEI "${item.imei}" — must be alphanumeric (max 50 characters)` });
             if (item.serial_number && item.serial_number.trim().length === 0)
                 return res.status(400).json({ message: 'Serial number cannot be empty if provided' });
         }
@@ -100,6 +100,7 @@ exports.createInward = async (req, res) => {
                 productItem.total_quantity = parseFloat(productItem.total_quantity) + parseFloat(item.quantity_received);
                 productItem.available_quantity = parseFloat(productItem.available_quantity) + parseFloat(item.quantity_received);
                 if (item.batch_id) productItem.batch_id = item.batch_id;
+                if (item.lot_number) productItem.lot_number = item.lot_number;
                 if (item.serial_number) productItem.serial_number = item.serial_number;
                 await productItem.save({ transaction: t });
             } else {
@@ -110,6 +111,7 @@ exports.createInward = async (req, res) => {
                     imei: item.imei || null,
                     serial_number: item.serial_number || null,
                     batch_id: item.batch_id || null,
+                    lot_number: item.lot_number || null,
                     total_quantity: item.quantity_received,
                     available_quantity: item.quantity_received,
                     stock_location: item.stock_location || 'DEFAULT',
@@ -270,7 +272,7 @@ exports.uploadInwardExcel = async (req, res) => {
         if (!req.file) {
             return res.status(400).json({ message: 'Excel file is required' });
         }
-        const { purchase_type, received_by, remarks, inward_date } = req.body;
+        const { purchase_type, received_by, remarks, inward_date, warehouse_id, rack_id } = req.body;
         const wb = xlsx.read(req.file.buffer, { type: 'buffer' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
@@ -283,6 +285,8 @@ exports.uploadInwardExcel = async (req, res) => {
             purchase_type: purchase_type || 'PAID_PURCHASE',
             received_by: received_by || '',
             remarks: remarks || '',
+            warehouse_id: warehouse_id || null,
+            rack_id: rack_id || null,
         }, { transaction: t });
 
         for (const r of rows) {
@@ -293,11 +297,14 @@ exports.uploadInwardExcel = async (req, res) => {
             let productId = keys.productid || keys.product_id || keys.product || keys.selectproduct || null;
             const barcode = keys.barcode || '';
             const imei = keys.imei || '';
+            const serialNumber = keys.serialnumber || keys.serial_number || keys.serialno || '';
             const batch = keys.batch || keys.batchid || keys.batch_id || '';
+            const lotNumber = keys.lotnumber || keys.lotno || keys.lot_number || keys.lot || '';
             const qty = parseFloat(keys.quantity || keys.qty || keys.quantityreceived || 0) || 0;
             const location = keys.location || keys.stocklocation || 'DEFAULT';
             const unitHint = keys.unit || keys.unitname || '';
             const unitId = (await resolveUnitId(unitHint)) || null;
+            const itemRackCode = keys.rack || keys.rackcode || keys.racknumber || '';
 
             if (qty <= 0) continue;
 
@@ -309,13 +316,24 @@ exports.uploadInwardExcel = async (req, res) => {
                 }
             }
 
+            // Resolve rack_id from rack code if provided
+            let itemRackId = rack_id || null;
+            if (itemRackCode && warehouse_id) {
+                const rack = await WarehouseRack.findOne({
+                    where: { warehouse_id, rack_code: itemRackCode },
+                    transaction: t
+                });
+                if (rack) itemRackId = rack.id;
+            }
+
             let productItem = null;
-            if (barcode || imei) {
+            if (barcode || imei || serialNumber) {
                 productItem = await ProductItem.findOne({
                     where: {
                         [sequelize.Sequelize.Op.or]: [
                             ...(barcode ? [{ barcode }] : []),
-                            ...(imei ? [{ imei }] : [])
+                            ...(imei ? [{ imei }] : []),
+                            ...(serialNumber ? [{ serial_number: serialNumber }] : [])
                         ]
                     },
                     transaction: t
@@ -325,6 +343,8 @@ exports.uploadInwardExcel = async (req, res) => {
                 productItem.total_quantity = parseFloat(productItem.total_quantity) + qty;
                 productItem.available_quantity = parseFloat(productItem.available_quantity) + qty;
                 if (batch) productItem.batch_id = batch;
+                if (lotNumber) productItem.lot_number = lotNumber;
+                if (serialNumber) productItem.serial_number = serialNumber;
                 if (location) productItem.stock_location = location;
                 await productItem.save({ transaction: t });
             } else {
@@ -332,7 +352,9 @@ exports.uploadInwardExcel = async (req, res) => {
                     product_id: productId,
                     barcode: barcode || null,
                     imei: imei || null,
+                    serial_number: serialNumber || null,
                     batch_id: batch || null,
+                    lot_number: lotNumber || null,
                     total_quantity: qty,
                     available_quantity: qty,
                     stock_location: location || 'DEFAULT',
@@ -346,6 +368,18 @@ exports.uploadInwardExcel = async (req, res) => {
                 quantity_received: qty,
                 unit_id: unitId,
             }, { transaction: t });
+
+            // Update WarehouseStock if warehouse_id provided
+            if (warehouse_id) {
+                const wsWhere = { warehouse_id, product_item_id: productItem.id, rack_id: itemRackId };
+                const [ws] = await WarehouseStock.findOrCreate({
+                    where: wsWhere,
+                    defaults: { ...wsWhere, available_quantity: 0, created_by: req.user?.id },
+                    transaction: t
+                });
+                ws.available_quantity = parseFloat(ws.available_quantity) + qty;
+                await ws.save({ transaction: t });
+            }
         }
 
         await t.commit();
@@ -357,8 +391,6 @@ exports.uploadInwardExcel = async (req, res) => {
     }
 };
 
-// Bulk Excel Upload: Outward
-// Bulk Excel Upload: Outward
 // Bulk Excel Upload: Outward
 exports.uploadOutwardExcel = async (req, res) => {
     const t = await sequelize.transaction();
@@ -372,7 +404,7 @@ exports.uploadOutwardExcel = async (req, res) => {
             return res.status(400).json({ message: 'No rows found in Excel' });
         }
 
-        const { outward_date, vehicle_reg_no, vehicle_id, vin_no, sales_category, incharge_person, remarks } = req.body;
+        const { outward_date, vehicle_reg_no, vehicle_id, vin_no, sales_category, incharge_person, remarks, warehouse_id, rack_id } = req.body;
 
         const outward = await OutwardRegister.create({
             outward_date: outward_date || new Date(),
@@ -382,6 +414,8 @@ exports.uploadOutwardExcel = async (req, res) => {
             sales_category: sales_category || 'DIRECT_SALES',
             incharge_person: incharge_person || '',
             remarks: remarks || 'Bulk Upload',
+            warehouse_id: warehouse_id || null,
+            rack_id: rack_id || null,
             created_by: req.user?.id || null,
         }, { transaction: t });
 
@@ -390,8 +424,12 @@ exports.uploadOutwardExcel = async (req, res) => {
             let productItemId = keys.productitemid || keys.itemid || keys.stockitem || keys.stockitemselectfromdropdown || null;
             const barcode = keys.barcode || '';
             const imei = keys.imei || '';
+            const serialNumber = keys.serialnumber || keys.serial_number || keys.serialno || '';
+            const batch = keys.batch || keys.batchid || keys.batch_id || '';
+            const lotNumber = keys.lotnumber || keys.lotno || keys.lot_number || keys.lot || '';
             const qtyUsed = parseFloat(keys.quantity || keys.qty || keys.quantityused || 0);
             const unitHint = keys.unit || keys.unitname || '';
+            const itemRackCode = keys.rack || keys.rackcode || keys.racknumber || '';
 
             if (qtyUsed <= 0) continue;
 
@@ -404,15 +442,16 @@ exports.uploadOutwardExcel = async (req, res) => {
             }
 
             let productItem = null;
-            // Find by ID or Barcode/IMEI
+            // Find by ID or Barcode/IMEI/Serial
             if (productItemId) {
                 productItem = await ProductItem.findByPk(productItemId, { transaction: t });
-            } else if (barcode || imei) {
+            } else if (barcode || imei || serialNumber) {
                 productItem = await ProductItem.findOne({
                     where: {
                         [sequelize.Sequelize.Op.or]: [
                             ...(barcode ? [{ barcode }] : []),
-                            ...(imei ? [{ imei }] : [])
+                            ...(imei ? [{ imei }] : []),
+                            ...(serialNumber ? [{ serial_number: serialNumber }] : [])
                         ]
                     },
                     transaction: t
@@ -424,18 +463,43 @@ exports.uploadOutwardExcel = async (req, res) => {
             }
 
             if (parseFloat(productItem.available_quantity) < qtyUsed) {
-                throw new Error(`Insufficient stock for item ${productItem.barcode || productItem.id}. Available: ${productItem.available_quantity}, Requested: ${qtyUsed}`);
+                throw new Error(`Insufficient stock for item ${productItem.barcode || productItem.imei || productItem.serial_number || productItem.id}. Available: ${productItem.available_quantity}, Requested: ${qtyUsed}`);
+            }
+
+            // Resolve rack_id from rack code if provided
+            let itemRackId = rack_id || null;
+            if (itemRackCode && warehouse_id) {
+                const rack = await WarehouseRack.findOne({
+                    where: { warehouse_id, rack_code: itemRackCode },
+                    transaction: t
+                });
+                if (rack) itemRackId = rack.id;
             }
 
             // Deduct Stock
             productItem.available_quantity = parseFloat(productItem.available_quantity) - qtyUsed;
             if (productItem.available_quantity <= 0 && productItem.status !== 'USED') {
-                // productItem.status = 'USED'; // Optional: Mark as used if 0
-                // Keep as IN_STOCK but 0 quantity for now, or change logic as per business rule
+                productItem.status = 'USED';
             }
             await productItem.save({ transaction: t });
 
-            const unitId = (await resolveUnitId(unitHint)) || productItem.unit_id || 1; // Fallback to 1 or logic to get unit from product
+            // Deduct from warehouse-specific stock if warehouse_id provided
+            if (warehouse_id) {
+                const wsWhere = { warehouse_id, product_item_id: productItem.id, rack_id: itemRackId };
+                const ws = await WarehouseStock.findOne({ where: wsWhere, transaction: t });
+                if (ws && parseFloat(ws.available_quantity) >= qtyUsed) {
+                    ws.available_quantity = parseFloat(ws.available_quantity) - qtyUsed;
+                    await ws.save({ transaction: t });
+                } else if (!ws) {
+                    // No warehouse stock record — item was inwarded without warehouse, skip warehouse deduction
+                } else {
+                    // Warehouse stock exists but insufficient — sync it from global then deduct
+                    ws.available_quantity = Math.max(0, parseFloat(productItem.available_quantity));
+                    await ws.save({ transaction: t });
+                }
+            }
+
+            const unitId = (await resolveUnitId(unitHint)) || productItem.unit_id || 1;
 
             await OutwardItem.create({
                 outward_id: outward.id,
@@ -487,6 +551,8 @@ exports.downloadInwardSample = async (req, res) => {
         // Fetch Master Data
         const products = await ProductMaster.findAll();
         const units = await Unit.findAll();
+        const warehouses = await Warehouse.findAll();
+        const racks = await WarehouseRack.findAll({ include: [{ model: Warehouse }] });
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Inward Entry');
@@ -498,18 +564,21 @@ exports.downloadInwardSample = async (req, res) => {
             { header: 'Select Product', key: 'product', width: 40 },
             { header: 'Barcode', key: 'barcode', width: 20 },
             { header: 'IMEI', key: 'imei', width: 20 },
+            { header: 'Serial Number', key: 'serial_number', width: 20 },
             { header: 'Quantity', key: 'quantity', width: 15 },
             { header: 'Unit', key: 'unit', width: 15 },
-            { header: 'Batch ID', key: 'batch', width: 20 },
+            { header: 'Batch Number', key: 'batch', width: 20 },
+            { header: 'LOT Number', key: 'lot_number', width: 20 },
+            { header: 'Rack Code', key: 'rack', width: 15 },
             { header: 'Stock Location', key: 'location', width: 20 }
         ];
 
         // Fill Reference Data
         refSheet.getCell('A1').value = 'Products';
         refSheet.getCell('B1').value = 'Units';
+        refSheet.getCell('C1').value = 'RackCodes';
 
         products.forEach((p, idx) => {
-            // Format: ID:123 - Name (SKU)
             const label = `ID:${p.id} - ${p.product_name} (${p.sku || 'N/A'})`;
             refSheet.getCell(`A${idx + 2}`).value = label;
         });
@@ -518,8 +587,13 @@ exports.downloadInwardSample = async (req, res) => {
             refSheet.getCell(`B${idx + 2}`).value = u.name;
         });
 
+        racks.forEach((r, idx) => {
+            refSheet.getCell(`C${idx + 2}`).value = r.rack_code;
+        });
+
         const prodCount = products.length || 1;
         const unitCount = units.length || 1;
+        const rackCount = racks.length || 1;
 
         // Data Validation
         for (let i = 2; i <= 500; i++) {
@@ -531,10 +605,17 @@ exports.downloadInwardSample = async (req, res) => {
             };
 
             // Unit Dropdown
-            worksheet.getCell(`E${i}`).dataValidation = {
+            worksheet.getCell(`F${i}`).dataValidation = {
                 type: 'list',
                 allowBlank: true,
                 formulae: [`=RefData!$B$2:$B$${unitCount + 1}`]
+            };
+
+            // Rack Dropdown
+            worksheet.getCell(`H${i}`).dataValidation = {
+                type: 'list',
+                allowBlank: true,
+                formulae: [`=RefData!$C$2:$C$${rackCount + 1}`]
             };
         }
 
@@ -560,6 +641,7 @@ exports.downloadOutwardSample = async (req, res) => {
             include: [{ model: ProductMaster }]
         });
         const units = await Unit.findAll();
+        const racks = await WarehouseRack.findAll({ include: [{ model: Warehouse }] });
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Outward Entry');
@@ -569,18 +651,26 @@ exports.downloadOutwardSample = async (req, res) => {
         // Headers
         worksheet.columns = [
             { header: 'Stock Item (Select from Dropdown)', key: 'stock_item', width: 50 },
+            { header: 'Barcode', key: 'barcode', width: 20 },
+            { header: 'IMEI', key: 'imei', width: 20 },
+            { header: 'Serial Number', key: 'serial_number', width: 20 },
+            { header: 'Batch Number', key: 'batch', width: 20 },
+            { header: 'LOT Number', key: 'lot_number', width: 20 },
             { header: 'Quantity Used', key: 'quantity', width: 15 },
             { header: 'Unit', key: 'unit', width: 15 },
+            { header: 'Rack Code', key: 'rack', width: 15 },
             { header: 'Remarks', key: 'remarks', width: 30 }
         ];
 
         // Fill Reference Data
         refSheet.getCell('A1').value = 'StockItems';
         refSheet.getCell('B1').value = 'Units';
+        refSheet.getCell('C1').value = 'RackCodes';
 
         items.forEach((item, idx) => {
-            // Format: ID:123 - Name (Barcode)
-            const label = `ID:${item.id} - ${item.ProductMaster ? item.ProductMaster.product_name : 'Unknown'} (Qty: ${parseFloat(item.available_quantity)})`;
+            // Format: ID:123 - Name (Barcode/IMEI) [Qty: X]
+            const identifier = item.barcode || item.imei || item.serial_number || `Item-${item.id}`;
+            const label = `ID:${item.id} - ${item.ProductMaster ? item.ProductMaster.product_name : 'Unknown'} (${identifier}) [Qty: ${parseFloat(item.available_quantity)}]`;
             refSheet.getCell(`A${idx + 2}`).value = label;
         });
 
@@ -588,8 +678,13 @@ exports.downloadOutwardSample = async (req, res) => {
             refSheet.getCell(`B${idx + 2}`).value = u.name;
         });
 
+        racks.forEach((r, idx) => {
+            refSheet.getCell(`C${idx + 2}`).value = r.rack_code;
+        });
+
         const stockCount = items.length || 1;
         const unitCount = units.length || 1;
+        const rackCount = racks.length || 1;
 
         // Add Data Validation to first 500 rows
         for (let i = 2; i <= 500; i++) {
@@ -601,15 +696,19 @@ exports.downloadOutwardSample = async (req, res) => {
             };
 
             // Unit Dropdown
-            worksheet.getCell(`C${i}`).dataValidation = {
+            worksheet.getCell(`G${i}`).dataValidation = {
                 type: 'list',
                 allowBlank: true,
                 formulae: [`=RefData!$B$2:$B$${unitCount + 1}`]
             };
-        }
 
-        // Add a sample row (optional, or leave blank)
-        // worksheet.addRow({ stock_item: 'Select here...', quantity: 1, unit: 'Pcs' });
+            // Rack Dropdown
+            worksheet.getCell(`H${i}`).dataValidation = {
+                type: 'list',
+                allowBlank: true,
+                formulae: [`=RefData!$C$2:$C$${rackCount + 1}`]
+            };
+        }
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', 'attachment; filename="Outward_Stock_Sample.xlsx"');

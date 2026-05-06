@@ -173,6 +173,11 @@ const migrations = [
         run: `ALTER TABLE product_items ADD COLUMN serial_number VARCHAR(100) DEFAULT NULL AFTER imei`
     },
     {
+        name: 'add_vendor_id_to_inward_register',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'inward_register' AND COLUMN_NAME = 'vendor_id'`,
+        run: `ALTER TABLE inward_register ADD COLUMN vendor_id INT UNSIGNED DEFAULT NULL AFTER rack_id`
+    },
+    {
         name: 'add_serial_number_to_stock_transfers',
         check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'stock_transfers' AND COLUMN_NAME = 'serial_number'`,
         run: `ALTER TABLE stock_transfers ADD COLUMN serial_number VARCHAR(100) DEFAULT NULL AFTER imei`
@@ -227,6 +232,20 @@ const migrations = [
                 INDEX idx_product_item (product_item_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `
+    },
+
+    // ── NEW: Add comments field to leaves table ───────────────────────────────
+    {
+        name: 'add_comments_to_leaves',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'leaves' AND COLUMN_NAME = 'comments'`,
+        run: `ALTER TABLE leaves ADD COLUMN comments TEXT DEFAULT NULL AFTER total_days`
+    },
+
+    // ── NEW: Add lot_number field to product_items table ───────────────────────────
+    {
+        name: 'add_lot_number_to_product_items',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'product_items' AND COLUMN_NAME = 'lot_number'`,
+        run: `ALTER TABLE product_items ADD COLUMN lot_number VARCHAR(100) DEFAULT NULL AFTER batch_id`
     }
 ];
 

@@ -26,6 +26,9 @@ const ProductItem = sequelize.define('ProductItem', {
     batch_id: {
         type: DataTypes.STRING(100),
     },
+    lot_number: {
+        type: DataTypes.STRING(100),
+    },
     total_quantity: {
         type: DataTypes.DECIMAL(10, 2),
         allowNull: false,

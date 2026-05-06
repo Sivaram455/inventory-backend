@@ -285,8 +285,8 @@ class HRController {
     // Leave Management
     async applyLeave(req, res, next) {
         try {
-            const { employee_id, leave_type, from_date, to_date, total_days } = req.body;
-            const leave = await Leave.create({ employee_id, leave_type, from_date, to_date, total_days });
+            const { employee_id, leave_type, from_date, to_date, total_days, comments } = req.body;
+            const leave = await Leave.create({ employee_id, leave_type, from_date, to_date, total_days, comments });
             res.status(201).json({ success: true, data: leave });
         } catch (error) {
             console.error('SERVER_ERROR [applyLeave]:', error);
