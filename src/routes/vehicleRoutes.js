@@ -2,8 +2,7 @@ const express = require('express');
 const router = express.Router();
 const vehicleController = require('../controllers/vehicleController');
 const authMiddleware = require('../middleware/authMiddleware');
-const multer = require('multer');
-const upload = multer({ dest: 'uploads/' });
+const upload = require('../middleware/uploadMiddleware');
 
 // Optional auth middleware - tries to get user but doesn't block if not authenticated
 const optionalAuth = (req, res, next) => {

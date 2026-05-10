@@ -25,6 +25,9 @@ router.delete('/beneficiaries/:id', bankingController.deleteBeneficiary);
 // Bank Payments (Transactions)
 router.get('/payments', bankingController.getPayments);
 router.get('/payments/export', bankingController.exportPayments);
+router.post('/payments/generate', bankingController.generateBankFile);
+router.post('/payments/upload-report', upload.single('file'), bankingController.uploadBankReport);
+router.post('/payments/:id/retry', bankingController.retryPayment);
 router.post('/payments', bankingController.createPayment);
 router.post('/payments/upload', upload.single('file'), bankingController.uploadPaymentsExcel);
 router.get('/payments/download-sample', bankingController.downloadPaymentsSample);

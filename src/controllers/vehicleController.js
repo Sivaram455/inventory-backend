@@ -107,7 +107,7 @@ exports.bulkUpload = async (req, res) => {
             status: item.Status || item.status || 'Active',
             created_by: req.user?.id || null,
             updated_by: req.user?.id || null
-        })).filter(v => v.name && v.vehicle_number);
+        })).filter(v => v.name);
 
         await VehicleType.bulkCreate(vehiclesToCreate, { ignoreDuplicates: true });
 

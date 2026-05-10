@@ -23,8 +23,7 @@ const VehicleType = sequelize.define('VehicleType', {
     },
     vehicle_number: {
         type: DataTypes.STRING(50),
-        allowNull: false,
-        unique: true
+        allowNull: true
     },
     image: {
         type: DataTypes.STRING(255),

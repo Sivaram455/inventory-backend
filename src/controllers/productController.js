@@ -126,7 +126,8 @@ exports.getProducts = async (req, res) => {
             include: [
                 { model: ProductCategory, as: 'category' },
                 { model: Unit, as: 'weight_unit' },
-                { model: Unit, as: 'pack_size_unit' }
+                { model: Unit, as: 'pack_size_unit' },
+                { model: Unit, as: 'unit' }
             ]
         });
         res.json(products);
@@ -147,7 +148,7 @@ exports.createProduct = async (req, res) => {
             'product_width', 'min_threshold', 'package_length_cm',
             'threshold_unit_id', 'product_weight', 'product_length',
             'product_width', 'min_threshold', 'package_length_cm',
-            'package_width_cm', 'package_height_cm', 'quantity', 'pack_size'
+            'package_width_cm', 'package_height_cm', 'quantity', 'pack_size', 'unit_id'
         ];
 
         numericFields.forEach(field => {
@@ -180,7 +181,7 @@ exports.updateProduct = async (req, res) => {
             'product_width', 'min_threshold', 'package_length_cm',
             'threshold_unit_id', 'product_weight', 'product_length',
             'product_width', 'min_threshold', 'package_length_cm',
-            'package_width_cm', 'package_height_cm', 'quantity', 'pack_size'
+            'package_width_cm', 'package_height_cm', 'quantity', 'pack_size', 'unit_id'
         ];
 
         numericFields.forEach(field => {
@@ -275,11 +276,12 @@ exports.uploadProductExcel = async (req, res) => {
                 const sub1Id = await resolveCategoryId(keys.subcategory1 || keys.sub1);
                 const sub2Id = await resolveCategoryId(keys.subcategory2 || keys.sub2);
 
-                const lengthUnitId = await resolveUnitId(keys.lengthunit || keys.unit);
+                const lengthUnitId = await resolveUnitId(keys.lengthunit);
                 const widthUnitId = await resolveUnitId(keys.widthunit);
                 const weightUnitId = await resolveUnitId(keys.weightunit);
-                const thresholdUnitId = await resolveUnitId(keys.thresholdunit || keys.unit);
+                const thresholdUnitId = await resolveUnitId(keys.thresholdunit);
                 const packSizeUnitId = await resolveUnitId(keys.packsizeunit || keys.packsize || keys.packunit);
+                const unitId = await resolveUnitId(keys.unit || keys.baseunit);
 
                 const productData = {
                     product_make: String(keys.make || keys.brand || '').trim(),
@@ -304,6 +306,7 @@ exports.uploadProductExcel = async (req, res) => {
                     package_height_cm: parseFloat(keys.packageh || 0) || null,
                     quantity: parseFloat(keys.quantity || 0) || null,
                     pack_size: packSizeUnitId,
+                    unit_id: unitId
                 };
 
                 const [product, created] = await ProductMaster.findOrCreate({
@@ -351,7 +354,7 @@ exports.getSampleExcel = async (req, res) => {
             'Length', 'Length Unit', 'Width', 'Width Unit',
             'Weight', 'Weight Unit', 'Threshold', 'Threshold Unit',
             'GST Slab', 'HSN Code', 'Package L', 'Package W', 'Package H',
-            'Quantity', 'Pack Size Unit'
+            'Quantity', 'Base Unit', 'Pack Size Unit'
         ];
         mainSheet.addRow(headers);
 
@@ -373,7 +376,8 @@ exports.getSampleExcel = async (req, res) => {
                 { model: Unit, as: 'width_unit' },
                 { model: Unit, as: 'weight_unit' },
                 { model: Unit, as: 'threshold_unit' },
-                { model: Unit, as: 'pack_size_unit' }
+                { model: Unit, as: 'pack_size_unit' },
+                { model: Unit, as: 'unit' }
             ],
             limit: 100
         });
@@ -399,6 +403,7 @@ exports.getSampleExcel = async (req, res) => {
                 product.package_width_cm || '',
                 product.package_height_cm || '',
                 product.quantity || '',
+                product.unit?.name || '',
                 product.pack_size_unit?.name || ''
             ]);
         });

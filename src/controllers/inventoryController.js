@@ -1,6 +1,7 @@
 const { sequelize, InwardRegister, InwardItem, OutwardRegister, OutwardItem, ProductItem, ProductMaster, Unit, VehicleUsage, Warehouse, WarehouseRack, WarehouseStock } = require('../models');
 const xlsx = require('xlsx');
 const ExcelJS = require('exceljs');
+const PDFDocument = require('pdfkit');
 const path = require('path');
 const fs = require('fs');
 
@@ -177,6 +178,7 @@ exports.createOutward = async (req, res) => {
             rack_id: rack_id || null,
         }, { transaction: t });
 
+        const createdItems = [];
         for (const item of items) {
             // Validate stock
             const productItem = await ProductItem.findByPk(item.product_item_id, { transaction: t });
@@ -190,9 +192,8 @@ exports.createOutward = async (req, res) => {
 
             // Deduct stock
             productItem.available_quantity = parseFloat(productItem.available_quantity) - parseFloat(item.quantity_used);
-            // If fully used, maybe mark as USED?
             if (productItem.available_quantity <= 0) {
-                productItem.status = 'USED'; // Or just leave as IN_STOCK with 0 qty depending on logic
+                productItem.status = 'USED';
             }
             await productItem.save({ transaction: t });
 
@@ -201,26 +202,24 @@ exports.createOutward = async (req, res) => {
                 const wsWhere = { warehouse_id, product_item_id: productItem.id, rack_id: rack_id || null };
                 const ws = await WarehouseStock.findOne({ where: wsWhere, transaction: t });
                 if (ws && parseFloat(ws.available_quantity) >= parseFloat(item.quantity_used)) {
-                    // Warehouse stock record exists and has enough — deduct from it
                     ws.available_quantity = parseFloat(ws.available_quantity) - parseFloat(item.quantity_used);
                     await ws.save({ transaction: t });
                 } else if (!ws) {
-                    // No warehouse stock record — item was inwarded without warehouse, skip warehouse deduction
-                    // Global product_items stock already deducted above
+                    // skip warehouse deduction
                 } else {
-                    // Warehouse stock exists but insufficient — sync it from global then deduct
                     ws.available_quantity = Math.max(0, parseFloat(productItem.available_quantity));
                     await ws.save({ transaction: t });
                 }
             }
 
             // Create OutwardItem
-            await OutwardItem.create({
+            const oi = await OutwardItem.create({
                 outward_id: outward.id,
                 product_item_id: productItem.id,
                 quantity_used: item.quantity_used,
                 unit_id: item.unit_id,
             }, { transaction: t });
+            createdItems.push(oi.id);
         }
 
         // Auto-log vehicle usage if vehicle_id is provided
@@ -238,7 +237,11 @@ exports.createOutward = async (req, res) => {
         }
 
         await t.commit();
-        res.status(201).json({ message: 'Outward entry successful', outwardId: outward.id });
+        res.status(201).json({ 
+            message: 'Outward entry successful', 
+            outwardId: outward.id,
+            itemIds: createdItems
+        });
     } catch (error) {
         await t.rollback();
         console.error('Outward Error:', error);
@@ -744,7 +747,10 @@ exports.getInwardHistory = async (req, res) => {
                     model: ProductItem,
                     include: [{
                         model: ProductMaster,
-                        include: [{ model: ProductCategory, as: 'category' }]
+                        include: [
+                            { model: ProductCategory, as: 'category' },
+                            { model: Unit, as: 'unit' }
+                        ]
                     }]
                 }
             ],
@@ -762,6 +768,7 @@ exports.getInwardHistory = async (req, res) => {
             rack: item.InwardRegister?.rack,
             ProductMaster: item.ProductItem?.ProductMaster,
             Category: item.ProductItem?.ProductMaster?.category?.category_name,
+            UnitName: item.ProductItem?.ProductMaster?.unit?.name || '',
             remarks: item.InwardRegister?.remarks
         }));
 
@@ -795,7 +802,10 @@ exports.getOutwardHistory = async (req, res) => {
                     model: ProductItem,
                     include: [{
                         model: ProductMaster,
-                        include: [{ model: ProductCategory, as: 'category' }]
+                        include: [
+                            { model: ProductCategory, as: 'category' },
+                            { model: Unit, as: 'unit' }
+                        ]
                     }]
                 }
             ],
@@ -804,6 +814,7 @@ exports.getOutwardHistory = async (req, res) => {
 
         const flattened = history.map(item => ({
             id: item.id,
+            outward_id: item.outward_id,
             created_at: item.OutwardRegister?.outward_date || item.created_at,
             sales_category: item.OutwardRegister?.sales_category,
             client_name: item.OutwardRegister?.incharge_person,
@@ -812,7 +823,10 @@ exports.getOutwardHistory = async (req, res) => {
             rack: item.OutwardRegister?.rack,
             ProductItem: item.ProductItem,
             Category: item.ProductItem?.ProductMaster?.category?.category_name,
+            UnitName: item.ProductItem?.ProductMaster?.unit?.name || '',
             Vehicle: item.OutwardRegister?.Vehicle,
+            vehicle_reg_no: item.OutwardRegister?.vehicle_reg_no,
+            vin_no: item.OutwardRegister?.vin_no,
             challan_number: item.OutwardRegister?.remarks,
             remarks: item.OutwardRegister?.remarks
         }));
@@ -821,5 +835,169 @@ exports.getOutwardHistory = async (req, res) => {
     } catch (error) {
         console.error('Get Outward History Error:', error);
         res.status(500).json({ message: 'Failed to fetch outward history', error: error.message });
+    }
+};
+
+exports.downloadOutwardReceipt = async (req, res) => {
+    try {
+        const { outwardId } = req.params;
+        const outward = await OutwardRegister.findByPk(outwardId, {
+            include: [
+                { model: Warehouse, as: 'warehouse' },
+                { model: require('../models').VehicleType, as: 'Vehicle' }
+            ]
+        });
+
+        if (!outward) return res.status(404).json({ message: 'Outward entry not found' });
+
+        const items = await OutwardItem.findAll({
+            where: { outward_id: outwardId },
+            include: [{
+                model: ProductItem,
+                include: [{
+                    model: ProductMaster,
+                    include: [{ model: Unit, as: 'unit' }]
+                }]
+            }]
+        });
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Outward Receipt');
+
+        // Styles
+        const headerStyle = { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } }, alignment: { horizontal: 'center' } };
+
+        // Header Info
+        worksheet.mergeCells('A1:G1');
+        const titleCell = worksheet.getCell('A1');
+        titleCell.value = 'DISPATCH & STOCK STATUS REPORT';
+        titleCell.font = { size: 16, bold: true };
+        titleCell.alignment = { horizontal: 'center' };
+
+        worksheet.addRow([]);
+        worksheet.addRow(['Outward ID:', outward.id, '', 'Date:', new Date(outward.outward_date).toLocaleDateString()]);
+        worksheet.addRow(['Incharge:', outward.incharge_person, '', 'Category:', outward.sales_category]);
+        worksheet.addRow(['Vehicle:', outward.vehicle_reg_no || outward.Vehicle?.name || 'N/A', '', 'Warehouse:', outward.warehouse?.name || 'Main']);
+        worksheet.addRow(['Remarks:', outward.remarks || '—']);
+        worksheet.addRow([]);
+
+        // Table Headers
+        const tableHeader = ['Product SKU', 'Product Name', 'Barcode / ID', 'Batch / LOT', 'Qty Dispatched', 'Current Balance', 'Unit'];
+        const headerRow = worksheet.addRow(tableHeader);
+        headerRow.eachCell((cell) => { cell.style = headerStyle; });
+
+        // Add Data
+        items.forEach(item => {
+            const pi = item.ProductItem;
+            const pm = pi?.ProductMaster;
+            worksheet.addRow([
+                pm?.sku || 'N/A',
+                pm?.product_name || 'Unknown',
+                pi?.barcode || pi?.imei || pi?.id,
+                `${pi?.batch_id || ''} / ${pi?.lot_number || ''}`,
+                parseFloat(item.quantity_used),
+                parseFloat(pi?.available_quantity || 0),
+                pm?.unit?.name || 'Units'
+            ]);
+        });
+
+        // Column Widths
+        worksheet.columns.forEach(col => { col.width = 20; });
+        worksheet.getColumn(2).width = 35; // Product Name
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="Outward_Receipt_${outwardId}.xlsx"`);
+
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (error) {
+        console.error('Download Receipt Error:', error);
+        res.status(500).json({ message: 'Failed to generate receipt', error: error.message });
+    }
+};
+
+exports.generateRollLabel = async (req, res) => {
+    try {
+        const { outwardItemId } = req.params;
+        
+        // Fetch item usage details
+        const itemUsage = await OutwardItem.findByPk(outwardItemId, {
+            include: [
+                { 
+                    model: OutwardRegister,
+                    include: [{ model: require('../models').VehicleType, as: 'Vehicle' }]
+                },
+                {
+                    model: ProductItem,
+                    include: [{ model: ProductMaster, include: [{ model: Unit, as: 'unit' }] }]
+                }
+            ]
+        });
+
+        if (!itemUsage) return res.status(404).json({ message: 'Item usage record not found' });
+
+        const pi = itemUsage.ProductItem;
+        const pm = pi?.ProductMaster;
+        const reg = itemUsage.OutwardRegister;
+
+        // Create PDF (4x6 inches)
+        // 1 inch = 72 points
+        const doc = new PDFDocument({
+            size: [288, 432], // 4x6 inches
+            margin: 18
+        });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="Roll_Label_${outwardItemId}.pdf"`);
+        doc.pipe(res);
+
+        // Header - Border
+        doc.rect(10, 10, 268, 412).stroke();
+
+        // Title
+        doc.fontSize(14).font('Helvetica-Bold').text('REMAINING STOCK LABEL', { align: 'center' });
+        doc.moveDown(0.5);
+        doc.moveTo(20, doc.y).lineTo(268, doc.y).stroke();
+        doc.moveDown(1);
+
+        // Content
+        const labelStyle = { font: 'Helvetica-Bold', size: 10 };
+        const valueStyle = { font: 'Helvetica', size: 11 };
+
+        // Helper to add row
+        const addRow = (label, value) => {
+            doc.fontSize(labelStyle.size).font(labelStyle.font).text(label, { continued: true });
+            doc.fontSize(valueStyle.size).font(valueStyle.font).text(` ${value || 'N/A'}`);
+            doc.moveDown(0.8);
+        };
+
+        // Previous Quantity (Small)
+        doc.fontSize(8).font('Helvetica-Oblique').text(`Stock Balance: ${pi?.available_quantity || 0} ${pm?.unit?.name || 'Units'}`, { align: 'right' });
+        doc.moveDown(1);
+
+        addRow('Vehicle Model:', reg?.Vehicle?.name || reg?.vehicle_reg_no);
+        addRow('VIN/REG No:', reg?.vehicle_reg_no || 'N/A');
+        
+        doc.moveDown(0.5);
+        const isColor = pm?.color && pm.color.toLowerCase() !== 'transparent' && pm.color.toLowerCase() !== 'clear';
+        addRow('PPF Roll:', isColor ? `Color (${pm.color})` : 'Transparent');
+        
+        addRow('Roll Brand:', pm?.product_make || 'N/A');
+        addRow('Roll Serial No:', pi?.barcode || pi?.imei || pi?.serial_number || pi?.id);
+        
+        doc.moveDown(1);
+        addRow('Date of Last Usage:', new Date(reg?.outward_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }));
+
+        // Footer / Scan Code
+        doc.moveDown(2);
+        doc.fontSize(8).font('Helvetica').text('Scan to track usage', { align: 'center' });
+        if (pi?.barcode) {
+            doc.fontSize(10).font('Courier-Bold').text(pi.barcode, { align: 'center' });
+        }
+
+        doc.end();
+    } catch (error) {
+        console.error('Label Gen Error:', error);
+        res.status(500).json({ message: 'Failed to generate label', error: error.message });
     }
 };

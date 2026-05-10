@@ -85,6 +85,10 @@ const ProductMaster = sequelize.define('ProductMaster', {
         type: DataTypes.BIGINT,
         allowNull: true,
     },
+    unit_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+    },
     created_by: {
         type: DataTypes.BIGINT,
     },

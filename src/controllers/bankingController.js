@@ -44,28 +44,32 @@ exports.deleteBank = async (req, res, next) => {
 };
 
 const validateBeneficiaryData = (data, isUpdate = false) => {
-    const { beneficiary_type, beneficiary_name, bank_account_no, ifsc_code, nature_of_account, account_type, pan, mobile_no } = data;
+    const { beneficiary_name, bank_account_no, ifsc_code, nature_of_account, account_type, pan, mobile_no } = data;
 
-    // For updates, we only validate fields if they are provided
     if (!isUpdate) {
-        if (!beneficiary_name || !bank_account_no || !ifsc_code || !nature_of_account || !account_type || !beneficiary_type) {
-            throw new Error('Mandatory fields missing (Type, Account Name, Account Number, IFSC Code, Nature of Account, Account Type)');
+        if (!beneficiary_name || !bank_account_no || !ifsc_code || !nature_of_account || !account_type) {
+            throw new Error('Mandatory fields missing (Account Name, Account Number, IFSC Code, Nature of Account, Account Type)');
         }
     }
 
-    // Mobile Number: 10 digits only (only validate if provided)
+    // IFSC Code: Strictly 11 characters, alphanumeric
+    if (ifsc_code && !/^[A-Z]{4}[A-Z0-9]{7}$/i.test(ifsc_code)) {
+        throw new Error('IFSC Code must be exactly 11 alphanumeric characters long');
+    }
+
+    // Mobile Number: 10 digits only
     if (mobile_no && !/^\d{10}$/.test(mobile_no)) {
-        throw new Error('Mobile number must be exactly 10 digits only (no spaces, special characters, or country codes)');
+        throw new Error('Mobile number must be exactly 10 digits only');
     }
 
-    // PAN: 10 characters, alphanumeric (only validate if provided)
+    // PAN: 10 characters, alphanumeric
     if (pan && !/^[A-Z0-9]{10}$/i.test(pan)) {
-        throw new Error('PAN card must be exactly 10 characters and strictly alphanumeric with no spaces or special characters');
+        throw new Error('PAN card must be exactly 10 characters and strictly alphanumeric');
     }
 
-    // Account Number: Alphanumeric only (only validate if provided)
+    // Account Number: Alphanumeric only
     if (bank_account_no && !/^[A-Z0-9]+$/i.test(bank_account_no)) {
-        throw new Error('Account number must be alphanumeric only (no spaces or special characters)');
+        throw new Error('Account number must be alphanumeric only');
     }
 
     return true;
@@ -160,7 +164,7 @@ exports.createBeneficiary = async (req, res, next) => {
         const ben = await Beneficiary.create({ ...req.body, created_by: req.user.id });
         res.status(201).json({ success: true, data: ben });
     } catch (err) {
-        if (err.message.includes('Mandatory fields') || err.message.includes('digits only') || err.message.includes('strictly alphanumeric') || err.message.includes('alphanumeric only')) {
+        if (err.message.includes('Mandatory fields') || err.message.includes('IFSC Code') || err.message.includes('digits only') || err.message.includes('strictly alphanumeric') || err.message.includes('alphanumeric only')) {
             return res.status(400).json({ success: false, message: err.message });
         }
         next(err);
@@ -176,7 +180,7 @@ exports.updateBeneficiary = async (req, res, next) => {
         await ben.update({ ...req.body, updated_by: req.user.id });
         res.json({ success: true, data: ben });
     } catch (err) {
-        if (err.message.includes('Mandatory fields') || err.message.includes('digits only') || err.message.includes('strictly alphanumeric') || err.message.includes('alphanumeric only')) {
+        if (err.message.includes('Mandatory fields') || err.message.includes('IFSC Code') || err.message.includes('digits only') || err.message.includes('strictly alphanumeric') || err.message.includes('alphanumeric only')) {
             return res.status(400).json({ success: false, message: err.message });
         }
         next(err);
@@ -231,12 +235,18 @@ exports.uploadBeneficiariesExcel = async (req, res) => {
                     continue;
                 }
 
+                const natureRaw = String(keys.natureofaccount || keys.nature || '').toLowerCase();
+                const natureOfAcc = natureRaw.includes('savings') ? '10' : (natureRaw.includes('current') ? '11' : keys.natureofaccount);
+
+                const typeRaw = String(keys.accounttype || keys.type || '').toLowerCase();
+                const accType = typeRaw.includes('neft') ? 'N' : (typeRaw.includes('internal') || typeRaw.includes('axis') ? 'I' : keys.accounttype);
+
                 validateBeneficiaryData({
                     beneficiary_name: benName,
                     bank_account_no: accNumber,
                     ifsc_code: ifsc,
-                    nature_of_account: keys.natureofaccount || keys.nature || '',
-                    account_type: keys.accounttype || '',
+                    nature_of_account: natureOfAcc,
+                    account_type: accType,
                     pan: keys.pan || '',
                     mobile_no: String(keys.mobileno || keys.mobile || keys.contact || '')
                 });
@@ -251,8 +261,8 @@ exports.uploadBeneficiariesExcel = async (req, res) => {
                     pan: keys.pan || null,
                     mobile_no: String(keys.mobileno || keys.mobile || keys.contact || ''),
                     email: keys.email || null,
-                    nature_of_account: keys.natureofaccount || keys.nature || null,
-                    account_type: keys.accounttype || null,
+                    nature_of_account: natureOfAcc,
+                    account_type: accType,
                     status: String(keys.status || keys.isactive).toLowerCase() !== 'inactive' ? 'active' : 'inactive',
                     created_by: req.user.id
                 });
@@ -305,37 +315,28 @@ exports.getPayments = async (req, res, next) => {
 
 exports.createPayment = async (req, res, next) => {
     try {
-        const { beneficiary_id, amount, payment_remarks, sequential_number, upload_date } = req.body;
+        const { beneficiary_id, amount, payment_remarks, upload_date } = req.body;
         if (!beneficiary_id || !amount) {
             return res.status(400).json({ success: false, message: 'Beneficiary and amount are required' });
         }
+        if (parseFloat(amount) <= 0) {
+            return res.status(400).json({ success: false, message: 'Amount must be greater than zero' });
+        }
+
         const beneficiary = await Beneficiary.findByPk(beneficiary_id);
         if (!beneficiary) return res.status(404).json({ success: false, message: 'Beneficiary not found' });
 
-        const uploadDate = upload_date ? new Date(upload_date) : new Date();
-
-        // Duplicate Check - Improved to allow retries of failed payments
-        const existing = await BankPayment.findOne({
-            where: {
-                credit_account_number: beneficiary.bank_account_no,
-                amount: parseFloat(amount),
-                sequential_number: sequential_number || null,
-                payment_status: { [Op.ne]: 'failed' }
-            }
+        // Auto-increment sequential number for this batch
+        const lastPayment = await BankPayment.findOne({
+            order: [['sequential_number', 'DESC']]
         });
-
-        if (existing) {
-            return res.status(400).json({
-                success: false,
-                message: `Duplicate Payment: A non-failed payment with these details already exists.`
-            });
-        }
+        const nextSeq = (lastPayment?.sequential_number || 0) + 1;
 
         const payment = await BankPayment.create({
             beneficiary_id: beneficiary.id,
-            batch_id: `MANUAL-${Date.now()}`,
+            batch_id: `PENDING`,
             file_name: 'Manual Entry',
-            upload_date: new Date(), // Always actual upload timestamp
+            upload_date: upload_date ? new Date(upload_date) : new Date(),
             reference_number: req.body.reference_number || null,
             type_of_account: beneficiary.account_type || null,
             amount: parseFloat(amount),
@@ -346,13 +347,180 @@ exports.createPayment = async (req, res, next) => {
             email: beneficiary.email,
             vendor_contact_number: beneficiary.mobile_no,
             payment_remarks: payment_remarks || null,
-            sequential_number: sequential_number || null,
+            debit_account_number: '921020054774358', // Static FDS Axis Account
+            sequential_number: nextSeq,
             payment_status: 'draft',
             created_by: req.user.id
         });
         res.status(201).json({ success: true, data: payment });
     } catch (err) {
         next(err);
+    }
+};
+
+exports.generateBankFile = async (req, res) => {
+    try {
+        const { paymentIds, batchId } = req.body;
+        if (!paymentIds || !paymentIds.length) return res.status(400).json({ message: 'No payments selected' });
+        if (!batchId) return res.status(400).json({ message: 'Batch ID is required' });
+
+        const payments = await BankPayment.findAll({
+            where: { id: paymentIds },
+            include: [{ model: Beneficiary }]
+        });
+
+        // Validation
+        for (const p of payments) {
+            if (parseFloat(p.amount) <= 0) {
+                return res.status(400).json({ success: false, message: `Payment to ${p.vendor_name} has zero amount. Please update it first.` });
+            }
+            if (p.ifsc_code?.length !== 11) {
+                return res.status(400).json({ success: false, message: `Payment to ${p.vendor_name} has an invalid IFSC code (${p.ifsc_code || 'Empty'}). Axis Bank requires exactly 11 characters.` });
+            }
+        }
+
+        const fileName = `${batchId}.xlsx`;
+
+        // Update payments with Batch ID and status
+        await BankPayment.update(
+            { batch_id: batchId, file_name: fileName, payment_status: 'generated' },
+            { where: { id: paymentIds } }
+        );
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('Axis_Batch_Upload');
+
+        // Header mapping as per Part B (Cols 1-12)
+        const headers = [
+            'Type of account', 'Amount', 'Upload Date', 'Vendor name', 'Credit account number',
+            'Email address', 'Payment remarks', 'Debit account number', 'Sequential number',
+            'IFSC Code', 'Nature of acc', 'Vendor contact number'
+        ];
+        sheet.addRow(headers);
+        sheet.getRow(1).font = { bold: true };
+
+        payments.forEach(p => {
+            const upDate = p.upload_date ? new Date(p.upload_date) : new Date();
+            sheet.addRow([
+                p.type_of_account,
+                parseFloat(p.amount),
+                upDate.toISOString().split('T')[0],
+                p.vendor_name,
+                p.credit_account_number,
+                p.email,
+                p.payment_remarks || 'Payment',
+                p.debit_account_number || '921020054774358',
+                p.sequential_number,
+                p.ifsc_code,
+                p.nature_of_account,
+                p.vendor_contact_number
+            ]);
+        });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+};
+
+exports.uploadBankReport = async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ message: 'Report file is required' });
+
+        const wb = xlsx.read(req.file.buffer, { type: 'buffer' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
+
+        let updated = 0, failed = 0;
+        const errors = [];
+
+        for (const r of rows) {
+            try {
+                const keys = Object.keys(r).reduce((acc, k) => { acc[normalizeHeader(k)] = r[k]; return acc; }, {});
+                
+                // Match by Vendor Name and Credit Account Number (more robust than just name)
+                const vendorName = keys.vendorname;
+                const accNo = keys.creditaccountnumber;
+                const seqNo = keys.sequentialnumber;
+
+                const payment = await BankPayment.findOne({
+                    where: {
+                        vendor_name: vendorName,
+                        credit_account_number: accNo,
+                        sequential_number: seqNo,
+                        payment_status: 'generated'
+                    }
+                });
+
+                if (payment) {
+                    const status = (keys.paymentstatus || '').toLowerCase().includes('success') ? 'success' : 'failed';
+                    await payment.update({
+                        payment_status: status,
+                        payment_declined_reason: keys.paymentdeclinedreason || null,
+                        batch_id: keys.batchid || payment.batch_id,
+                        file_name: keys.filename || payment.file_name,
+                        utr_number: keys.utrno || keys.utrnumber || null,
+                        processed_date: keys.processeddate ? new Date(keys.processeddate) : new Date()
+                    });
+                    updated++;
+                } else {
+                    failed++;
+                }
+            } catch (err) {
+                failed++;
+                errors.push(err.message);
+            }
+        }
+
+        res.json({ success: true, message: 'Report reconciliation complete', stats: { updated, failed, errors } });
+    } catch (err) {
+        res.status(500).json({ message: 'Reconciliation failed', error: err.message });
+    }
+};
+
+exports.retryPayment = async (req, res) => {
+    try {
+        const original = await BankPayment.findByPk(req.params.id, {
+            include: [{ model: Beneficiary }]
+        });
+        if (!original) return res.status(404).json({ message: 'Payment not found' });
+        if (original.payment_status !== 'failed' && original.payment_status !== 'generated') {
+             // Allow retry for generated if they want to re-generate with fixed data
+        }
+
+        const beneficiary = original.Beneficiary;
+        if (!beneficiary) return res.status(404).json({ message: 'Linked beneficiary not found' });
+
+        const lastPayment = await BankPayment.findOne({ order: [['sequential_number', 'DESC']] });
+        const nextSeq = (lastPayment?.sequential_number || 0) + 1;
+
+        const retry = await BankPayment.create({
+            beneficiary_id: beneficiary.id,
+            batch_id: 'PENDING',
+            file_name: 'Retry Entry',
+            upload_date: new Date(),
+            reference_number: original.reference_number,
+            type_of_account: beneficiary.account_type,
+            amount: original.amount,
+            vendor_name: beneficiary.beneficiary_name,
+            credit_account_number: beneficiary.bank_account_no,
+            ifsc_code: beneficiary.ifsc_code,
+            nature_of_account: beneficiary.nature_of_account,
+            email: beneficiary.email,
+            vendor_contact_number: beneficiary.mobile_no,
+            payment_remarks: original.payment_remarks,
+            debit_account_number: original.debit_account_number,
+            sequential_number: nextSeq,
+            payment_status: 'draft',
+            created_by: req.user.id
+        });
+
+        res.json({ success: true, data: retry });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
     }
 };
 
