@@ -20,6 +20,9 @@ router.put('/attendance/:id/override', authMiddleware, checkPrivilege('Attendanc
 // Payroll Management
 router.get('/payroll', authMiddleware, checkPrivilege('Payroll', 'view'), hrController.getPayrollByMonth);
 router.post('/payroll/generate', authMiddleware, checkPrivilege('Payroll', 'add'), hrController.generatePayroll);
+router.put('/payroll/:id/status', authMiddleware, checkPrivilege('Payroll', 'edit'), hrController.updatePayrollStatus);
+router.get('/payroll/download/excel', authMiddleware, checkPrivilege('Payroll', 'view'), hrController.downloadPayrollExcel);
+router.get('/payroll/download/pdf', authMiddleware, checkPrivilege('Payroll', 'view'), hrController.downloadPayrollPDF);
 
 // Leave Management
 router.get('/leaves', authMiddleware, checkPrivilege('Leave Management', 'view'), hrController.getAllLeaves);

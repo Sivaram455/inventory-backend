@@ -1,6 +1,8 @@
 const { Employee, Attendance, Payroll, Leave, User } = require('../models');
 const { Op } = require('sequelize');
 const xlsx = require('xlsx');
+const ExcelJS = require('exceljs');
+const PDFDocument = require('pdfkit');
 
 
 class HRController {
@@ -99,14 +101,50 @@ class HRController {
 
     async getAttendanceByDate(req, res, next) {
         try {
-            const { date } = req.query;
+            const { date, month, employee_id } = req.query;
+            const where = {};
+            
+            if (date) {
+                where.attendance_date = date;
+            } else if (month) {
+                const year = parseInt(month.split('-')[0]);
+                const m = parseInt(month.split('-')[1]);
+                const startDate = `${month}-01`;
+                const lastDay = new Date(year, m, 0).getDate();
+                const endDate = `${month}-${lastDay}`;
+                where.attendance_date = { [Op.between]: [startDate, endDate] };
+            }
+
+            if (employee_id && employee_id !== 'undefined' && employee_id !== '') {
+                where.employee_id = Number(employee_id);
+            }
+
             const records = await Attendance.findAll({
-                where: { attendance_date: date },
-                include: [{ model: Employee, include: [{ model: User, attributes: ['name'] }] }]
+                where,
+                include: [{ model: Employee, include: [{ model: User, attributes: ['name'] }] }],
+                order: [['attendance_date', 'ASC']]
             });
             res.status(200).json({ success: true, data: records });
         } catch (error) {
             console.error('SERVER_ERROR [getAttendanceByDate]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async updatePayrollStatus(req, res, next) {
+        try {
+            const { id } = req.params;
+            const { payment_status, payment_date } = req.body;
+            const payroll = await Payroll.findByPk(id);
+            if (!payroll) return res.status(404).json({ success: false, message: 'Payroll record not found' });
+
+            await payroll.update({
+                payment_status,
+                payment_date: payment_status === 'PAID' ? (payment_date || new Date()) : payroll.payment_date
+            });
+            res.status(200).json({ success: true, data: payroll });
+        } catch (error) {
+            console.error('SERVER_ERROR [updatePayrollStatus]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
@@ -278,6 +316,125 @@ class HRController {
             res.status(200).json({ success: true, data: records });
         } catch (error) {
             console.error('SERVER_ERROR [getPayrollByMonth]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async downloadPayrollExcel(req, res, next) {
+        try {
+            const { month } = req.query;
+            const records = await Payroll.findAll({
+                where: { payroll_month: month },
+                include: [{ model: Employee, include: [{ model: User, attributes: ['name'] }] }]
+            });
+
+            const workbook = new ExcelJS.Workbook();
+            const worksheet = workbook.addWorksheet('Payroll Report');
+
+            worksheet.columns = [
+                { header: 'Employee Name', key: 'name', width: 30 },
+                { header: 'Month', key: 'month', width: 15 },
+                { header: 'Basic Salary', key: 'basic', width: 15 },
+                { header: 'Present Days', key: 'present', width: 15 },
+                { header: 'Approved Leaves', key: 'leaves', width: 15 },
+                { header: 'Paid Days', key: 'paid', width: 15 },
+                { header: 'Daily Rate', key: 'rate', width: 15 },
+                { header: 'Net Salary', key: 'net', width: 15 },
+                { header: 'Status', key: 'status', width: 15 }
+            ];
+
+            records.forEach(rec => {
+                worksheet.addRow({
+                    name: rec.Employee?.User?.name || 'N/A',
+                    month: rec.payroll_month,
+                    basic: rec.basic_salary,
+                    present: rec.present_days,
+                    leaves: rec.approved_leaves,
+                    paid: rec.paid_days,
+                    rate: rec.daily_rate,
+                    net: rec.net_salary,
+                    status: rec.payment_status || 'PENDING'
+                });
+            });
+
+            worksheet.getRow(1).font = { bold: true };
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="Payroll_Report_${month}.xlsx"`);
+
+            await workbook.xlsx.write(res);
+            res.end();
+        } catch (error) {
+            console.error('SERVER_ERROR [downloadPayrollExcel]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async downloadPayrollPDF(req, res, next) {
+        try {
+            const { month } = req.query;
+            const records = await Payroll.findAll({
+                where: { payroll_month: month },
+                include: [{ model: Employee, include: [{ model: User, attributes: ['name'] }] }]
+            });
+
+            const doc = new PDFDocument({ margin: 30, size: 'A4' });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="Payroll_Report_${month}.pdf"`);
+            doc.pipe(res);
+
+            // Title
+            doc.fontSize(20).text('Payroll Report', { align: 'center' });
+            doc.fontSize(14).text(`Month: ${month}`, { align: 'center' });
+            doc.moveDown();
+
+            // Table Header
+            const tableTop = 150;
+            const columns = [
+                { label: 'Employee', x: 30, width: 150 },
+                { label: 'Basic', x: 180, width: 70 },
+                { label: 'Paid Days', x: 250, width: 70 },
+                { label: 'Daily Rate', x: 320, width: 70 },
+                { label: 'Net Salary', x: 390, width: 80 },
+                { label: 'Status', x: 470, width: 70 }
+            ];
+
+            doc.fontSize(10).font('Helvetica-Bold');
+            columns.forEach(col => {
+                doc.text(col.label, col.x, tableTop);
+            });
+
+            doc.moveTo(30, tableTop + 15).lineTo(560, tableTop + 15).stroke();
+
+            let currentY = tableTop + 25;
+            doc.font('Helvetica');
+
+            records.forEach(rec => {
+                if (currentY > 750) {
+                    doc.addPage();
+                    currentY = 50;
+                    
+                    // Re-add header on new page
+                    doc.fontSize(10).font('Helvetica-Bold');
+                    columns.forEach(col => {
+                        doc.text(col.label, col.x, currentY);
+                    });
+                    doc.moveTo(30, currentY + 15).lineTo(560, currentY + 15).stroke();
+                    currentY += 25;
+                    doc.font('Helvetica');
+                }
+                doc.text(rec.Employee?.User?.name || 'N/A', columns[0].x, currentY, { width: columns[0].width });
+                doc.text(String(rec.basic_salary), columns[1].x, currentY);
+                doc.text(String(rec.paid_days), columns[2].x, currentY);
+                doc.text(String(rec.daily_rate), columns[3].x, currentY);
+                doc.text(String(rec.net_salary), columns[4].x, currentY);
+                doc.text(rec.payment_status || 'PENDING', columns[5].x, currentY);
+                currentY += 20;
+            });
+
+            doc.end();
+        } catch (error) {
+            console.error('SERVER_ERROR [downloadPayrollPDF]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
