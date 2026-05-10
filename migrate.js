@@ -246,6 +246,13 @@ const migrations = [
         name: 'add_lot_number_to_product_items',
         check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'product_items' AND COLUMN_NAME = 'lot_number'`,
         run: `ALTER TABLE product_items ADD COLUMN lot_number VARCHAR(100) DEFAULT NULL AFTER batch_id`
+    },
+
+    // ── NEW: Add unit_id to product_master table ──────────────────────────────
+    {
+        name: 'add_unit_id_to_product_master',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'product_master' AND COLUMN_NAME = 'unit_id'`,
+        run: `ALTER TABLE product_master ADD COLUMN unit_id BIGINT NULL AFTER pack_size`
     }
 ];
 
