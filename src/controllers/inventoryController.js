@@ -555,7 +555,7 @@ exports.downloadInwardSample = async (req, res) => {
         const products = await ProductMaster.findAll();
         const units = await Unit.findAll();
         const warehouses = await Warehouse.findAll();
-        const racks = await WarehouseRack.findAll({ include: [{ model: Warehouse }] });
+        const racks = await WarehouseRack.findAll({ include: [{ model: Warehouse, as: 'warehouse' }] });
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Inward Entry');
@@ -644,7 +644,7 @@ exports.downloadOutwardSample = async (req, res) => {
             include: [{ model: ProductMaster }]
         });
         const units = await Unit.findAll();
-        const racks = await WarehouseRack.findAll({ include: [{ model: Warehouse }] });
+        const racks = await WarehouseRack.findAll({ include: [{ model: Warehouse, as: 'warehouse' }] });
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Outward Entry');
