@@ -18,6 +18,20 @@ class UserService {
         updated_by: userId,
       });
 
+      // Automatically create Employee record if role is 'staff' (ID 3)
+      if (Number(data.role_id) === 3) {
+        const { Employee } = require('../models');
+        await Employee.create({
+          user_id: user.id,
+          employee_code: `EMP${Date.now()}`,
+          designation: 'Staff',
+          department: 'Operations',
+          employment_type: 'Full-time',
+          date_of_joining: new Date().toISOString().slice(0, 10),
+          created_by: userId
+        });
+      }
+
       return user;
     } catch (error) {
       throw error;

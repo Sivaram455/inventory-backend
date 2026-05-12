@@ -253,6 +253,26 @@ const migrations = [
         name: 'add_unit_id_to_product_master',
         check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'product_master' AND COLUMN_NAME = 'unit_id'`,
         run: `ALTER TABLE product_master ADD COLUMN unit_id BIGINT NULL AFTER pack_size`
+    },
+    {
+        name: 'add_check_in_time_to_attendance',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'attendance' AND COLUMN_NAME = 'check_in_time'`,
+        run: `ALTER TABLE attendance ADD COLUMN check_in_time TIME NULL AFTER attendance_date`
+    },
+    {
+        name: 'add_check_out_time_to_attendance',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'attendance' AND COLUMN_NAME = 'check_out_time'`,
+        run: `ALTER TABLE attendance ADD COLUMN check_out_time TIME NULL AFTER check_in_time`
+    },
+    {
+        name: 'add_working_hours_to_attendance',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'attendance' AND COLUMN_NAME = 'working_hours'`,
+        run: `ALTER TABLE attendance ADD COLUMN working_hours DECIMAL(5,2) DEFAULT 0.00 AFTER check_out_time`
+    },
+    {
+        name: 'add_shift_times_to_employees',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'employees' AND COLUMN_NAME = 'shift_start'`,
+        run: `ALTER TABLE employees ADD COLUMN shift_start TIME DEFAULT '09:00:00' AFTER basic_salary, ADD COLUMN shift_end TIME DEFAULT '18:00:00' AFTER shift_start`
     }
 ];
 

@@ -38,6 +38,12 @@ class HRController {
                 user_id = user.id;
             }
 
+            // Check if employee already exists for this user
+            const existingEmployee = await Employee.findOne({ where: { user_id } });
+            if (existingEmployee) {
+                return res.status(400).json({ success: false, message: 'This user is already registered as an employee' });
+            }
+
             const employee = await Employee.create({
                 user_id,
                 employee_code: employee_code || `EMP${Date.now()}`,
@@ -83,12 +89,22 @@ class HRController {
             const statusToPresence = { 'PRESENT': 1.0, 'HALF_DAY': 0.5, 'ABSENT': 0.0, 'LEAVE': 0.0 };
 
             for (const mark of marks) {
+                const category = statusToPresence[mark.status] || 0.0;
+                const updateFields = { 
+                    status: mark.status, 
+                    remarks: mark.remarks, 
+                    category,
+                    check_in_time: mark.check_in_time || null,
+                    check_out_time: mark.check_out_time || null,
+                    working_hours: mark.working_hours || 0
+                };
+
                 const [record, created] = await Attendance.findOrCreate({
                     where: { employee_id: mark.employee_id, attendance_date },
-                    defaults: { status: mark.status, remarks: mark.remarks }
+                    defaults: updateFields
                 });
                 if (!created) {
-                    await record.update({ status: mark.status, remarks: mark.remarks });
+                    await record.update(updateFields);
                 }
                 results.push(record);
             }
@@ -181,10 +197,10 @@ class HRController {
 
                 let category = 0;
                 let status = 'ABSENT';
-                if (workingHours >= 8) {
+                if (workingHours >= 9) {
                     category = 1.0;
                     status = 'PRESENT';
-                } else if (workingHours >= 4) {
+                } else if (workingHours >= 4.5) {
                     category = 0.5;
                     status = 'HALF_DAY';
                 }
@@ -195,7 +211,8 @@ class HRController {
                         check_in_time: String(inTime),
                         check_out_time: String(outTime),
                         working_hours: Math.round(workingHours * 100) / 100,
-                        status
+                        status,
+                        category
                     }
                 });
 
@@ -204,7 +221,8 @@ class HRController {
                         check_in_time: String(inTime),
                         check_out_time: String(outTime),
                         working_hours: Math.round(workingHours * 100) / 100,
-                        status
+                        status,
+                        category
                     });
                 }
                 results.push(record);
