@@ -105,6 +105,7 @@ exports.bulkUpload = async (req, res) => {
             make: item.Make || item.make,
             vehicle_number: item['Vehicle Number'] || item.vehicle_number,
             status: item.Status || item.status || 'Active',
+            price_multiplier: parseFloat(item.Multiplier || item.price_multiplier || 1.0),
             created_by: req.user?.id || null,
             updated_by: req.user?.id || null
         })).filter(v => v.name);
@@ -132,7 +133,8 @@ exports.downloadSample = async (req, res) => {
             { header: 'Mode', key: 'mode', width: 15 },
             { header: 'Make', key: 'make', width: 15 },
             { header: 'Vehicle Number', key: 'vehicle_number', width: 20 },
-            { header: 'Status', key: 'status', width: 10 }
+            { header: 'Status', key: 'status', width: 10 },
+            { header: 'Multiplier', key: 'price_multiplier', width: 10 }
         ];
 
         worksheet.addRow({
@@ -140,7 +142,8 @@ exports.downloadSample = async (req, res) => {
             mode: 'Truck',
             make: 'Tata',
             vehicle_number: 'KA-01-AB-1234',
-            status: 'Active'
+            status: 'Active',
+            price_multiplier: 1.2
         });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

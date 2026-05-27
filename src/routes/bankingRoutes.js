@@ -31,5 +31,7 @@ router.post('/payments/:id/retry', bankingController.retryPayment);
 router.post('/payments', bankingController.createPayment);
 router.post('/payments/upload', upload.single('file'), bankingController.uploadPaymentsExcel);
 router.get('/payments/download-sample', bankingController.downloadPaymentsSample);
+router.put('/payments/:id', bankingController.updatePayment);
+router.delete('/payments/:id', bankingController.deletePayment);
 
 module.exports = router;

@@ -9,11 +9,14 @@ const router = express.Router();
 // Employee Management
 router.get('/employees', authMiddleware, checkPrivilege('Staff Master', 'view'), hrController.getAllEmployees);
 router.post('/employees', authMiddleware, checkPrivilege('Staff Master', 'add'), hrController.createEmployee);
+router.get('/employees/template', authMiddleware, checkPrivilege('Staff Master', 'add'), hrController.downloadEmployeeTemplate);
+router.post('/employees/upload', authMiddleware, checkPrivilege('Staff Master', 'add'), excelUploadMiddleware.single('file'), hrController.uploadEmployeeExcel);
 router.put('/employees/:id', authMiddleware, checkPrivilege('Staff Master', 'edit'), hrController.updateEmployee);
 
 // Attendance Management
 router.get('/attendance', authMiddleware, checkPrivilege('Attendance', 'view'), hrController.getAttendanceByDate);
 router.post('/attendance', authMiddleware, checkPrivilege('Attendance', 'add'), hrController.markAttendance);
+router.get('/attendance/template', authMiddleware, checkPrivilege('Attendance', 'add'), hrController.downloadAttendanceTemplate);
 router.post('/attendance/upload', authMiddleware, checkPrivilege('Attendance', 'add'), excelUploadMiddleware.single('file'), hrController.uploadAttendanceExcel);
 router.put('/attendance/:id/override', authMiddleware, checkPrivilege('Attendance', 'edit'), hrController.updateAdminOverride);
 

@@ -358,6 +358,55 @@ exports.createPayment = async (req, res, next) => {
     }
 };
 
+exports.updatePayment = async (req, res, next) => {
+    try {
+        const payment = await BankPayment.findByPk(req.params.id);
+        if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
+
+        // Only allow editing if NOT yet reconciled or processed
+        if (!['draft', 'pending', 'generated'].includes(payment.payment_status) || payment.utr_number) {
+            return res.status(400).json({ success: false, message: 'Only draft, pending, or generated payments without a UTR number can be edited' });
+        }
+
+        const { beneficiary_id, amount, payment_remarks, upload_date, reference_number } = req.body;
+
+        if (beneficiary_id && beneficiary_id !== payment.beneficiary_id) {
+            const beneficiary = await Beneficiary.findByPk(beneficiary_id);
+            if (!beneficiary) return res.status(404).json({ success: false, message: 'Beneficiary not found' });
+            
+            req.body.vendor_name = beneficiary.beneficiary_name;
+            req.body.credit_account_number = beneficiary.bank_account_no;
+            req.body.ifsc_code = beneficiary.ifsc_code;
+            req.body.type_of_account = beneficiary.account_type;
+            req.body.nature_of_account = beneficiary.nature_of_account;
+            req.body.email = beneficiary.email;
+            req.body.vendor_contact_number = beneficiary.mobile_no;
+        }
+
+        await payment.update({ ...req.body, updated_by: req.user.id });
+        res.json({ success: true, data: payment });
+    } catch (err) {
+        next(err);
+    }
+};
+
+exports.deletePayment = async (req, res, next) => {
+    try {
+        const payment = await BankPayment.findByPk(req.params.id);
+        if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
+
+        // Only allow deleting if NOT yet processed
+        if (payment.utr_number || payment.payment_status === 'success') {
+            return res.status(400).json({ success: false, message: 'Processed payments cannot be deleted' });
+        }
+
+        await payment.destroy();
+        res.json({ success: true, message: 'Payment deleted' });
+    } catch (err) {
+        next(err);
+    }
+};
+
 exports.generateBankFile = async (req, res) => {
     try {
         const { paymentIds, batchId } = req.body;
@@ -401,10 +450,11 @@ exports.generateBankFile = async (req, res) => {
 
         payments.forEach(p => {
             const upDate = p.upload_date ? new Date(p.upload_date) : new Date();
+            const formattedDate = `${String(upDate.getDate()).padStart(2, '0')}/${String(upDate.getMonth() + 1).padStart(2, '0')}/${upDate.getFullYear()}`;
             sheet.addRow([
                 p.type_of_account,
                 parseFloat(p.amount),
-                upDate.toISOString().split('T')[0],
+                formattedDate,
                 p.vendor_name,
                 p.credit_account_number,
                 p.email,

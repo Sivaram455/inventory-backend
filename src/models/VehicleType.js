@@ -41,6 +41,12 @@ const VehicleType = sequelize.define('VehicleType', {
     updated_by: {
         type: DataTypes.BIGINT,
         allowNull: true
+    },
+    price_multiplier: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: false,
+        defaultValue: 1.0,
+        comment: 'Multiplier for service pricing (e.g., 1.2 for SUV)'
     }
 }, {
     tableName: 'vehicle_type',

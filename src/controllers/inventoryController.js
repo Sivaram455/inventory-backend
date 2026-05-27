@@ -838,6 +838,137 @@ exports.getOutwardHistory = async (req, res) => {
     }
 };
 
+exports.exportInventoryExcel = async (req, res) => {
+    try {
+        const { type } = req.query; // summary, details, inward, outward
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('Inventory Export');
+
+        if (type === 'details') {
+            const items = await ProductItem.findAll({
+                include: [{ model: ProductMaster, include: ['category'] }]
+            });
+            sheet.columns = [
+                { header: 'Roll ID', key: 'id', width: 10 },
+                { header: 'Product Name', key: 'product', width: 30 },
+                { header: 'Batch ID', key: 'batch', width: 15 },
+                { header: 'Original Qty', key: 'original', width: 15 },
+                { header: 'Remaining Qty', key: 'remaining', width: 15 },
+                { header: 'Stock Location', key: 'location', width: 20 },
+                { header: 'Barcode', key: 'barcode', width: 20 },
+                { header: 'IMEI', key: 'imei', width: 20 },
+                { header: 'Serial Number', key: 'serial', width: 20 },
+                { header: 'Status', key: 'status', width: 15 }
+            ];
+            items.forEach(item => {
+                sheet.addRow({
+                    id: item.id,
+                    product: item.ProductMaster?.product_name || 'N/A',
+                    batch: item.batch_id,
+                    original: item.total_quantity,
+                    remaining: item.available_quantity,
+                    location: item.stock_location,
+                    barcode: item.barcode,
+                    imei: item.imei,
+                    serial: item.serial_number,
+                    status: item.status
+                });
+            });
+        } else if (type === 'summary') {
+            const items = await ProductItem.findAll({
+                include: [{ model: ProductMaster, include: ['category'] }]
+            });
+            // Group by Product
+            const summary = {};
+            items.forEach(item => {
+                const pid = item.product_id;
+                if (!summary[pid]) {
+                    summary[pid] = {
+                        code: item.ProductMaster?.sku || pid,
+                        name: item.ProductMaster?.product_name || 'N/A',
+                        category: item.ProductMaster?.category?.category_name || 'N/A',
+                        stock: 0,
+                        rolls: 0
+                    };
+                }
+                summary[pid].stock += parseFloat(item.available_quantity || 0);
+                if (item.status === 'IN_STOCK') summary[pid].rolls++;
+            });
+
+            sheet.columns = [
+                { header: 'Code', key: 'code', width: 15 },
+                { header: 'Product', key: 'name', width: 30 },
+                { header: 'Category', key: 'category', width: 20 },
+                { header: 'Total Stock', key: 'stock', width: 15 },
+                { header: 'Active Rolls', key: 'rolls', width: 15 }
+            ];
+            Object.values(summary).forEach(row => sheet.addRow(row));
+        } else if (type === 'inward') {
+            const { ProductMaster, Unit, ProductCategory } = require('../models');
+            const history = await InwardItem.findAll({
+                include: [
+                    { model: InwardRegister, as: 'InwardRegister' },
+                    { model: ProductItem, include: [{ model: ProductMaster, include: [{ model: ProductCategory, as: 'category' }] }] }
+                ]
+            });
+            sheet.columns = [
+                { header: 'Date', key: 'date', width: 15 },
+                { header: 'Product', key: 'product', width: 30 },
+                { header: 'Category', key: 'category', width: 20 },
+                { header: 'Qty', key: 'qty', width: 10 },
+                { header: 'Batch', key: 'batch', width: 15 },
+                { header: 'Supplier', key: 'supplier', width: 20 }
+            ];
+            history.forEach(item => {
+                sheet.addRow({
+                    date: item.InwardRegister?.inward_date || item.created_at,
+                    product: item.ProductItem?.ProductMaster?.product_name,
+                    category: item.ProductItem?.ProductMaster?.category?.category_name,
+                    qty: item.quantity_received,
+                    batch: item.ProductItem?.batch_id,
+                    supplier: item.InwardRegister?.received_by
+                });
+            });
+        } else if (type === 'outward') {
+            const { ProductMaster, ProductCategory, VehicleType } = require('../models');
+            const history = await OutwardItem.findAll({
+                include: [
+                    { model: OutwardRegister, include: [{ model: VehicleType, as: 'Vehicle' }] },
+                    { model: ProductItem, include: [{ model: ProductMaster, include: [{ model: ProductCategory, as: 'category' }] }] }
+                ]
+            });
+            sheet.columns = [
+                { header: 'Date', key: 'date', width: 15 },
+                { header: 'Product', key: 'product', width: 30 },
+                { header: 'Qty', key: 'qty', width: 10 },
+                { header: 'Barcode', key: 'barcode', width: 20 },
+                { header: 'Client', key: 'client', width: 20 },
+                { header: 'Vehicle', key: 'vehicle', width: 15 },
+                { header: 'Challan', key: 'challan', width: 15 }
+            ];
+            history.forEach(item => {
+                sheet.addRow({
+                    date: item.OutwardRegister?.outward_date || item.created_at,
+                    product: item.ProductItem?.ProductMaster?.product_name,
+                    qty: item.quantity_used,
+                    barcode: item.ProductItem?.barcode,
+                    client: item.OutwardRegister?.client_name || 'Internal',
+                    vehicle: item.OutwardRegister?.Vehicle?.vehicle_number || item.OutwardRegister?.vehicle_reg_no,
+                    challan: item.OutwardRegister?.challan_number
+                });
+            });
+        }
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="Inventory_Export_${type}.xlsx"`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (error) {
+        console.error('Export Error:', error);
+        res.status(500).json({ message: 'Export failed', error: error.message });
+    }
+};
+
 exports.downloadOutwardReceipt = async (req, res) => {
     try {
         const { outwardId } = req.params;

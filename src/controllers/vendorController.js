@@ -24,7 +24,11 @@ class VendorController {
 
     async create(req, res) {
         try {
-            let { brand_name, contact_person, phone, email, products, status, catlog_url, price_url, image_url } = req.body;
+            let { 
+                brand_name, contact_person, phone, email, products, status, 
+                catlog_url, price_url, image_url,
+                product_portfolio, gst_number, account_number, ifsc_code, whatsapp_number
+            } = req.body;
 
             if (req.files) {
                 if (req.files['catlog_file']) catlog_url = `/uploads/${req.files['catlog_file'][0].filename}`;
@@ -35,6 +39,7 @@ class VendorController {
             const vendor = await Vendor.create({
                 brand_name, contact_person, phone, email, products,
                 catlog_url, price_url, image_url,
+                product_portfolio, gst_number, account_number, ifsc_code, whatsapp_number,
                 status: status || 'ACTIVE',
                 created_by: req.user.id
             });

@@ -19,6 +19,7 @@ const WarehouseRack = require('./WarehouseRack');
 const WarehouseStock = require('./WarehouseStock');
 const VehicleType = require('./VehicleType');
 const VehicleUsage = require('./VehicleUsage');
+const Daybook = require('./Daybook');
 const Employee = require('./Employee');
 const Attendance = require('./Attendance');
 const Payroll = require('./Payroll');
@@ -115,6 +116,9 @@ StockTransfer.belongsTo(WarehouseRack, { foreignKey: 'to_rack_id', as: 'toRack',
 VehicleType.hasMany(VehicleUsage, { foreignKey: 'vehicle_id', constraints: false });
 VehicleUsage.belongsTo(VehicleType, { foreignKey: 'vehicle_id', constraints: false });
 
+VehicleType.hasMany(Daybook, { foreignKey: 'model_id', constraints: false });
+Daybook.belongsTo(VehicleType, { foreignKey: 'model_id', as: 'VehicleModel', constraints: false });
+
 // Outward Register -> Vehicle
 OutwardRegister.belongsTo(VehicleType, { foreignKey: 'vehicle_id', as: 'Vehicle', constraints: false });
 
@@ -155,6 +159,7 @@ module.exports = {
   WarehouseStock,
   VehicleType,
   VehicleUsage,
+  Daybook,
   Employee,
   Attendance,
   Payroll,

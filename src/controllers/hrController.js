@@ -175,54 +175,76 @@ class HRController {
 
             const results = [];
             for (const row of rows) {
-                const employeeCode = row.Employee_Code || row.Code || row.employee_code;
-                const date = row.Date || row.date;
-                const inTime = row.In_Time || row.InTime || row.in_time;
-                const outTime = row.Out_Time || row.OutTime || row.out_time;
+                // Support multiple column name variations
+                const employeeCode = row.Employee_Code || row.Code || row.employee_code || 
+                                   (row['Employee Name (Select from list)'] ? row['Employee Name (Select from list)'].split('(').pop()?.replace(')', '') : null);
+                const dateRaw = row.Date || row.date;
+                const inTime = row.In_Time || row.InTime || row.in_time || row['Check-In'];
+                const outTime = row.Out_Time || row.OutTime || row.out_time || row['Check-Out'];
+                const statusFromExcel = row.Status || row.status;
 
-                if (!employeeCode || !date) continue;
+                if (!employeeCode || !dateRaw) continue;
+
+                // Handle Excel date serial or string
+                let attendance_date;
+                if (typeof dateRaw === 'number') {
+                    // Excel serial date to JS Date
+                    const d = new Date((dateRaw - 25569) * 86400 * 1000);
+                    attendance_date = d.toISOString().slice(0, 10);
+                } else {
+                    attendance_date = new Date(dateRaw).toISOString().slice(0, 10);
+                }
 
                 const employee = await Employee.findOne({ where: { employee_code: String(employeeCode) } });
                 if (!employee) continue;
 
-                let workingHours = 0;
-                if (inTime && outTime) {
-                    const toHours = (t) => {
-                        if (typeof t === 'number') return t * 24; // Excel serial time
-                        const [h, m] = String(t).split(':').map(Number);
-                        return h + (m / 60);
-                    };
-                    workingHours = toHours(outTime) - toHours(inTime);
-                }
+                const toHours = (t) => {
+                    if (!t) return 0;
+                    if (typeof t === 'number') return t * 24; // Excel serial time
+                    const parts = String(t).split(':').map(Number);
+                    if (parts.length < 2) return 0;
+                    return parts[0] + (parts[1] / 60);
+                };
+
+                const workingHoursRaw = toHours(outTime) - toHours(inTime);
+                const working_hours = Math.max(0, Math.round(workingHoursRaw * 100) / 100);
 
                 let category = 0;
-                let status = 'ABSENT';
-                if (workingHours >= 9) {
-                    category = 1.0;
-                    status = 'PRESENT';
-                } else if (workingHours >= 4.5) {
-                    category = 0.5;
-                    status = 'HALF_DAY';
+                let status = statusFromExcel || 'ABSENT';
+                
+                if (!statusFromExcel) {
+                    if (working_hours >= 9) {
+                        category = 1.0;
+                        status = 'PRESENT';
+                    } else if (working_hours >= 4.5) {
+                        category = 0.5;
+                        status = 'HALF_DAY';
+                    }
+                } else {
+                    const statusVal = { 'PRESENT': 1.0, 'HALF_DAY': 0.5, 'ABSENT': 0.0, 'LEAVE': 0.0 };
+                    category = statusVal[status.toUpperCase()] || 0.0;
                 }
 
                 const [record, created] = await Attendance.findOrCreate({
-                    where: { employee_id: employee.id, attendance_date: date },
+                    where: { employee_id: employee.id, attendance_date },
                     defaults: {
-                        check_in_time: String(inTime),
-                        check_out_time: String(outTime),
-                        working_hours: Math.round(workingHours * 100) / 100,
-                        status,
-                        category
+                        check_in_time: inTime ? String(inTime) : null,
+                        check_out_time: outTime ? String(outTime) : null,
+                        working_hours,
+                        status: status.toUpperCase(),
+                        category,
+                        remarks: row.Remarks || 'Uploaded via Excel'
                     }
                 });
 
                 if (!created) {
                     await record.update({
-                        check_in_time: String(inTime),
-                        check_out_time: String(outTime),
-                        working_hours: Math.round(workingHours * 100) / 100,
-                        status,
-                        category
+                        check_in_time: inTime ? String(inTime) : record.check_in_time,
+                        check_out_time: outTime ? String(outTime) : record.check_out_time,
+                        working_hours: working_hours || record.working_hours,
+                        status: status.toUpperCase(),
+                        category,
+                        remarks: row.Remarks || record.remarks
                     });
                 }
                 results.push(record);
@@ -230,6 +252,69 @@ class HRController {
             res.status(200).json({ success: true, count: results.length });
         } catch (error) {
             console.error('SERVER_ERROR [uploadAttendanceExcel]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async downloadAttendanceTemplate(req, res, next) {
+        try {
+            const employees = await Employee.findAll({
+                include: [{ model: User, attributes: ['name'] }]
+            });
+
+            const workbook = new ExcelJS.Workbook();
+            const sheet = workbook.addWorksheet('Attendance');
+            const dataSheet = workbook.addWorksheet('Data', { state: 'hidden' });
+
+            // Headers
+            sheet.columns = [
+                { header: 'Employee Name (Select from list)', key: 'employee', width: 40 },
+                { header: 'Date (YYYY-MM-DD)', key: 'date', width: 20 },
+                { header: 'Check-In (HH:mm)', key: 'in', width: 15 },
+                { header: 'Check-Out (HH:mm)', key: 'out', width: 15 },
+                { header: 'Status (Optional: PRESENT, HALF_DAY, ABSENT)', key: 'status', width: 35 },
+                { header: 'Remarks', key: 'remarks', width: 30 }
+            ];
+
+            // Add employees to data sheet for validation
+            employees.forEach((emp, i) => {
+                dataSheet.getCell(`A${i + 1}`).value = `${emp.User?.name || 'N/A'} (${emp.employee_code})`;
+            });
+
+            // Status options
+            const statuses = ['PRESENT', 'HALF_DAY', 'ABSENT', 'LEAVE'];
+            statuses.forEach((s, i) => {
+                dataSheet.getCell(`B${i + 1}`).value = s;
+            });
+
+            // Apply data validation
+            const rowCount = 500;
+            for (let i = 2; i <= rowCount; i++) {
+                sheet.getCell(`A${i}`).dataValidation = {
+                    type: 'list',
+                    allowBlank: true,
+                    formulae: [`=Data!$A$1:$A$${employees.length || 1}`]
+                };
+                sheet.getCell(`E${i}`).dataValidation = {
+                    type: 'list',
+                    allowBlank: true,
+                    formulae: [`=Data!$B$1:$B$${statuses.length}`]
+                };
+                
+                // Set default date
+                sheet.getCell(`B${i}`).value = new Date().toISOString().slice(0, 10);
+            }
+
+            sheet.getRow(1).font = { bold: true };
+            sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', 'attachment; filename="Attendance_Template.xlsx"');
+
+            await workbook.xlsx.write(res);
+            res.end();
+        } catch (error) {
+            console.error('SERVER_ERROR [downloadAttendanceTemplate]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }
@@ -479,6 +564,126 @@ class HRController {
             res.status(200).json({ success: true, data: leave });
         } catch (error) {
             console.error('SERVER_ERROR [updateLeaveStatus]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async downloadEmployeeTemplate(req, res, next) {
+        try {
+            const workbook = new ExcelJS.Workbook();
+            const sheet = workbook.addWorksheet('Staff');
+
+            sheet.columns = [
+                { header: 'Employee Code', key: 'code', width: 20 },
+                { header: 'Full Name', key: 'name', width: 30 },
+                { header: 'Email', key: 'email', width: 30 },
+                { header: 'Phone', key: 'phone', width: 20 },
+                { header: 'Department', key: 'dept', width: 20 },
+                { header: 'Designation', key: 'designation', width: 20 },
+                { header: 'Employment Type (FULL_TIME, CONTRACT, PART_TIME)', key: 'type', width: 40 },
+                { header: 'Basic Salary', key: 'salary', width: 15 },
+                { header: 'Date of Joining (YYYY-MM-DD)', key: 'joinDate', width: 25 }
+            ];
+
+            const depts = ['Operations', 'Accounts', 'Warehouse', 'HR', 'Logistics', 'Dispatch', 'Admin', 'Finance'];
+            const types = ['FULL_TIME', 'CONTRACT', 'PART_TIME'];
+
+            const dataSheet = workbook.addWorksheet('Data', { state: 'hidden' });
+            depts.forEach((d, i) => dataSheet.getCell(`A${i + 1}`).value = d);
+            types.forEach((t, i) => dataSheet.getCell(`B${i + 1}`).value = t);
+
+            for (let i = 2; i <= 100; i++) {
+                sheet.getCell(`E${i}`).dataValidation = {
+                    type: 'list',
+                    allowBlank: true,
+                    formulae: [`=Data!$A$1:$A$${depts.length}`]
+                };
+                sheet.getCell(`G${i}`).dataValidation = {
+                    type: 'list',
+                    allowBlank: true,
+                    formulae: [`=Data!$B$1:$B$${types.length}`]
+                };
+            }
+
+            sheet.getRow(1).font = { bold: true };
+            sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', 'attachment; filename="Staff_Template.xlsx"');
+
+            await workbook.xlsx.write(res);
+            res.end();
+        } catch (error) {
+            console.error('SERVER_ERROR [downloadEmployeeTemplate]:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    async uploadEmployeeExcel(req, res, next) {
+        try {
+            if (!req.file) return res.status(400).json({ message: 'Excel file is required' });
+
+            const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const rows = xlsx.utils.sheet_to_json(sheet);
+
+            const results = [];
+            for (const row of rows) {
+                const {
+                    'Employee Code': code,
+                    'Full Name': name,
+                    'Email': email,
+                    'Phone': phone,
+                    'Department': dept,
+                    'Designation': designation,
+                    'Employment Type': type,
+                    'Basic Salary': salary,
+                    'Date of Joining': joinDate
+                } = row;
+
+                if (!name || !email) continue;
+
+                let user = await User.findOne({ where: { email } });
+                if (!user) {
+                    user = await User.create({
+                        name,
+                        email,
+                        mobile_number: String(phone || ''),
+                        password: 'Staff@123',
+                        role_id: 3,
+                        created_by: req.user.id
+                    });
+                }
+
+                const [employee, created] = await Employee.findOrCreate({
+                    where: { user_id: user.id },
+                    defaults: {
+                        employee_code: String(code || `EMP${Date.now()}`),
+                        designation: designation || 'Staff',
+                        department: dept || 'Operations',
+                        employment_type: type || 'FULL_TIME',
+                        date_of_joining: joinDate ? new Date(joinDate) : new Date(),
+                        basic_salary: parseFloat(salary) || 0,
+                        created_by: req.user.id
+                    }
+                });
+
+                if (!created) {
+                    await employee.update({
+                        employee_code: code ? String(code) : employee.employee_code,
+                        designation: designation || employee.designation,
+                        department: dept || employee.department,
+                        employment_type: type || employee.employment_type,
+                        date_of_joining: joinDate ? new Date(joinDate) : employee.date_of_joining,
+                        basic_salary: salary ? parseFloat(salary) : employee.basic_salary,
+                        updated_by: req.user.id
+                    });
+                }
+                results.push(employee);
+            }
+            res.status(200).json({ success: true, count: results.length });
+        } catch (error) {
+            console.error('SERVER_ERROR [uploadEmployeeExcel]:', error);
             res.status(500).json({ success: false, message: error.message });
         }
     }

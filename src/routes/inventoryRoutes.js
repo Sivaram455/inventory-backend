@@ -28,5 +28,6 @@ router.get('/outward/sample', authMiddleware, checkPrivilege('Outward Register',
 // Receipt Download
 router.get('/outward/receipt/:outwardId', authMiddleware, checkPrivilege('Outward Register', 'view'), inventoryController.downloadOutwardReceipt);
 router.get('/outward/label/:outwardItemId', authMiddleware, checkPrivilege('Outward Register', 'view'), inventoryController.generateRollLabel);
+router.get('/export', authMiddleware, checkPrivilege('Master Inventory', 'view'), inventoryController.exportInventoryExcel);
 
 module.exports = router;

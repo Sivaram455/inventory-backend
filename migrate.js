@@ -273,6 +273,53 @@ const migrations = [
         name: 'add_shift_times_to_employees',
         check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'employees' AND COLUMN_NAME = 'shift_start'`,
         run: `ALTER TABLE employees ADD COLUMN shift_start TIME DEFAULT '09:00:00' AFTER basic_salary, ADD COLUMN shift_end TIME DEFAULT '18:00:00' AFTER shift_start`
+    },
+    {
+        name: 'add_new_fields_to_vendors_v2',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'vendors' AND COLUMN_NAME = 'account_number'`,
+        run: `ALTER TABLE vendors 
+              ADD COLUMN account_number VARCHAR(50) NULL AFTER gst_number,
+              ADD COLUMN ifsc_code VARCHAR(20) NULL AFTER account_number`
+    },
+    {
+        name: 'create_daybook_table',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'daybook'`,
+        run: `
+            CREATE TABLE daybook (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                entry_date DATE NOT NULL,
+                entry_time TIME DEFAULT NULL,
+                vehicle_no VARCHAR(50) DEFAULT NULL,
+                model_id BIGINT DEFAULT NULL,
+                car_color VARCHAR(100) DEFAULT NULL,
+                incharge_person VARCHAR(150) DEFAULT NULL,
+                vin_number VARCHAR(100) DEFAULT NULL,
+                expected_delivery_date DATE DEFAULT NULL,
+                service_description TEXT DEFAULT NULL,
+                delivery_date DATE DEFAULT NULL,
+                delivery_by VARCHAR(150) DEFAULT NULL,
+                ppf_type VARCHAR(100) DEFAULT NULL,
+                ppf_sl_no VARCHAR(100) DEFAULT NULL,
+                sunfilm_type VARCHAR(100) DEFAULT NULL,
+                microfiber_internal VARCHAR(100) DEFAULT NULL,
+                dash_camera VARCHAR(100) DEFAULT NULL,
+                microfiber_customer VARCHAR(100) DEFAULT NULL,
+                comments TEXT DEFAULT NULL,
+                dismantling_assemble VARCHAR(255) DEFAULT NULL,
+                inspection_in_by VARCHAR(150) DEFAULT NULL,
+                inspection_out_by VARCHAR(150) DEFAULT NULL,
+                wastage VARCHAR(255) DEFAULT NULL,
+                audi_direct_billing VARCHAR(255) DEFAULT NULL,
+                paint_purchases VARCHAR(255) DEFAULT NULL,
+                paint_amt DECIMAL(12,2) DEFAULT 0.00,
+                created_by BIGINT DEFAULT NULL,
+                updated_by BIGINT DEFAULT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_daybook_model (model_id),
+                CONSTRAINT fk_daybook_vehicle_type FOREIGN KEY (model_id) REFERENCES vehicle_type(id) ON DELETE SET NULL ON UPDATE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `
     }
 ];
 

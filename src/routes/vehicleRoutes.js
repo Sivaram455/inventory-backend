@@ -23,7 +23,7 @@ const { checkPrivilege } = require('../middleware/privilegeMiddleware');
 
 // Vehicle Routes
 router.get('/vehicles', authMiddleware, checkPrivilege('Vehicle Type', 'view'), vehicleController.getAllVehicles);
-router.get('/vehicles/active', authMiddleware, checkPrivilege('Vehicle Type', 'view'), vehicleController.getActiveVehicles);
+router.get('/vehicles/active', authMiddleware, vehicleController.getActiveVehicles);
 router.post('/vehicles', authMiddleware, checkPrivilege('Vehicle Type', 'add'), upload.single('image_file'), vehicleController.createVehicle);
 router.put('/vehicles/:id', authMiddleware, checkPrivilege('Vehicle Type', 'edit'), upload.single('image_file'), vehicleController.updateVehicle);
 router.delete('/vehicles/:id', authMiddleware, checkPrivilege('Vehicle Type', 'delete'), vehicleController.deleteVehicle);

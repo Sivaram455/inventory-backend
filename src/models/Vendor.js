@@ -29,6 +29,26 @@ const Vendor = sequelize.define('Vendor', {
         type: DataTypes.TEXT,
         allowNull: false,
     },
+    product_portfolio: {
+        type: DataTypes.TEXT, // Tags or list of products
+        allowNull: true,
+    },
+    gst_number: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+    },
+    account_number: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+    },
+    ifsc_code: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+    },
+    whatsapp_number: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+    },
     status: {
         type: DataTypes.STRING(50),
         allowNull: true,

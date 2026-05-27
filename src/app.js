@@ -41,6 +41,7 @@ const bankingRoutes = require('./routes/bankingRoutes');
 const vendorRoutes = require('./routes/vendorRoutes');
 const warehouseRoutes = require('./routes/warehouseRoutes');
 const serviceCatalogRoutes = require('./routes/serviceCatalogRoutes');
+const daybookRoutes = require('./routes/daybookRoutes');
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/transfers', transferRoutes);
 app.use('/api/vehicles', vehicleRoutes);
@@ -50,6 +51,7 @@ app.use('/api/banking', bankingRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/warehouses', warehouseRoutes);
 app.use('/api/service-catalog', serviceCatalogRoutes);
+app.use('/api/daybook', daybookRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
