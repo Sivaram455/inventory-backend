@@ -36,6 +36,8 @@ router.get('/vehicles/sample', authMiddleware, vehicleController.downloadSample)
 router.get('/usage', authMiddleware, checkPrivilege('Vehicle Usage', 'view'), vehicleController.getAllVehicleUsage);
 router.get('/usage/vehicle/:vehicleId', authMiddleware, checkPrivilege('Vehicle Usage', 'view'), vehicleController.getVehicleUsageByVehicle);
 router.post('/usage', authMiddleware, checkPrivilege('Vehicle Usage', 'add'), vehicleController.createVehicleUsage);
+router.put('/usage/:id', authMiddleware, checkPrivilege('Vehicle Usage', 'edit'), vehicleController.updateVehicleUsage);
+router.delete('/usage/:id', authMiddleware, checkPrivilege('Vehicle Usage', 'delete'), vehicleController.deleteVehicleUsage);
 
 module.exports = router;
 

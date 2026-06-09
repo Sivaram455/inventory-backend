@@ -320,6 +320,13 @@ const migrations = [
                 CONSTRAINT fk_daybook_vehicle_type FOREIGN KEY (model_id) REFERENCES vehicle_type(id) ON DELETE SET NULL ON UPDATE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `
+    },
+    {
+        name: 'add_parts_and_sunfilms_to_vehicle_usage',
+        check: `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${process.env.DB_NAME}' AND TABLE_NAME = 'vehicle_usage' AND COLUMN_NAME = 'ppf_parts'`,
+        run: `ALTER TABLE vehicle_usage 
+              ADD COLUMN ppf_parts JSON DEFAULT NULL, 
+              ADD COLUMN sunfilm_matrix JSON DEFAULT NULL`
     }
 ];
 

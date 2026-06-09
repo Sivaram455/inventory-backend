@@ -55,6 +55,14 @@ const VehicleUsage = sequelize.define('VehicleUsage', {
         type: DataTypes.TEXT,
         allowNull: true
     },
+    ppf_parts: {
+        type: DataTypes.JSON,
+        allowNull: true
+    },
+    sunfilm_matrix: {
+        type: DataTypes.JSON,
+        allowNull: true
+    },
     created_by: {
         type: DataTypes.BIGINT,
         allowNull: true

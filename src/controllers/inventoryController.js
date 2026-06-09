@@ -39,7 +39,17 @@ exports.getAllItems = async (req, res) => {
         if (req.query.status) where.status = req.query.status;
         const items = await ProductItem.findAll({
             where,
-            include: [{ model: ProductMaster, include: ['category'] }]
+            include: [
+                { model: ProductMaster, include: ['category'] },
+                {
+                    model: WarehouseStock,
+                    as: 'warehouseStocks',
+                    include: [
+                        { model: Warehouse, as: 'warehouse' },
+                        { model: WarehouseRack, as: 'rack' }
+                    ]
+                }
+            ]
         });
         res.json(items);
     } catch (error) {
@@ -846,7 +856,17 @@ exports.exportInventoryExcel = async (req, res) => {
 
         if (type === 'details') {
             const items = await ProductItem.findAll({
-                include: [{ model: ProductMaster, include: ['category'] }]
+                include: [
+                    { model: ProductMaster, include: ['category'] },
+                    {
+                        model: WarehouseStock,
+                        as: 'warehouseStocks',
+                        include: [
+                            { model: Warehouse, as: 'warehouse' },
+                            { model: WarehouseRack, as: 'rack' }
+                        ]
+                    }
+                ]
             });
             sheet.columns = [
                 { header: 'Roll ID', key: 'id', width: 10 },
@@ -854,6 +874,8 @@ exports.exportInventoryExcel = async (req, res) => {
                 { header: 'Batch ID', key: 'batch', width: 15 },
                 { header: 'Original Qty', key: 'original', width: 15 },
                 { header: 'Remaining Qty', key: 'remaining', width: 15 },
+                { header: 'Warehouse', key: 'warehouse_name', width: 20 },
+                { header: 'Rack Code', key: 'rack_code', width: 15 },
                 { header: 'Stock Location', key: 'location', width: 20 },
                 { header: 'Barcode', key: 'barcode', width: 20 },
                 { header: 'IMEI', key: 'imei', width: 20 },
@@ -861,12 +883,15 @@ exports.exportInventoryExcel = async (req, res) => {
                 { header: 'Status', key: 'status', width: 15 }
             ];
             items.forEach(item => {
+                const primaryStock = item.warehouseStocks && item.warehouseStocks.length > 0 ? item.warehouseStocks[0] : null;
                 sheet.addRow({
                     id: item.id,
                     product: item.ProductMaster?.product_name || 'N/A',
                     batch: item.batch_id,
                     original: item.total_quantity,
                     remaining: item.available_quantity,
+                    warehouse_name: primaryStock?.warehouse?.name || '',
+                    rack_code: primaryStock?.rack?.rack_code || '',
                     location: item.stock_location,
                     barcode: item.barcode,
                     imei: item.imei,
@@ -942,7 +967,7 @@ exports.exportInventoryExcel = async (req, res) => {
                 { header: 'Product', key: 'product', width: 30 },
                 { header: 'Qty', key: 'qty', width: 10 },
                 { header: 'Barcode', key: 'barcode', width: 20 },
-                { header: 'Client', key: 'client', width: 20 },
+                { header: 'Incharge Person', key: 'incharge_person', width: 20 },
                 { header: 'Vehicle', key: 'vehicle', width: 15 },
                 { header: 'Challan', key: 'challan', width: 15 }
             ];
@@ -952,7 +977,7 @@ exports.exportInventoryExcel = async (req, res) => {
                     product: item.ProductItem?.ProductMaster?.product_name,
                     qty: item.quantity_used,
                     barcode: item.ProductItem?.barcode,
-                    client: item.OutwardRegister?.client_name || 'Internal',
+                    incharge_person: item.OutwardRegister?.incharge_person || 'Internal',
                     vehicle: item.OutwardRegister?.Vehicle?.vehicle_number || item.OutwardRegister?.vehicle_reg_no,
                     challan: item.OutwardRegister?.challan_number
                 });

@@ -84,7 +84,7 @@ app.get('/api/seed-force', async (req, res) => {
       { name: 'Stock Transfer', group: 'INVENTORY', sortOrder: 7 },
       { name: 'Master Inventory', group: 'INVENTORY', sortOrder: 8 },
       { name: 'Remnant Calc', group: 'INVENTORY', sortOrder: 9 },
-      { name: 'Vehicle Usage', group: 'OPERATIONS', sortOrder: 10 },
+     // { name: 'Vehicle Usage', group: 'OPERATIONS', sortOrder: 10 },
       { name: 'Staff Master', group: 'ADMIN', sortOrder: 11 },
       { name: 'Payroll', group: 'ADMIN', sortOrder: 12 },
       { name: 'Leave Management', group: 'ADMIN', sortOrder: 13 },

@@ -200,3 +200,38 @@ exports.getVehicleUsageByVehicle = async (req, res) => {
     }
 };
 
+exports.updateVehicleUsage = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const usageData = {
+            ...req.body,
+            updated_by: req.user?.id || null
+        };
+        const [updated] = await VehicleUsage.update(usageData, { where: { id } });
+        if (updated) {
+            const updatedUsage = await VehicleUsage.findByPk(id, { include: [{ model: VehicleType }] });
+            res.json(updatedUsage);
+        } else {
+            res.status(404).json({ message: 'Vehicle usage record not found' });
+        }
+    } catch (error) {
+        console.error('Update vehicle usage error:', error);
+        res.status(500).json({ message: 'Error updating vehicle usage', error: error.message });
+    }
+};
+
+exports.deleteVehicleUsage = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const deleted = await VehicleUsage.destroy({ where: { id } });
+        if (deleted) {
+            res.status(204).send();
+        } else {
+            res.status(404).json({ message: 'Vehicle usage record not found' });
+        }
+    } catch (error) {
+        console.error('Delete vehicle usage error:', error);
+        res.status(500).json({ message: 'Error deleting vehicle usage', error: error.message });
+    }
+};
+
