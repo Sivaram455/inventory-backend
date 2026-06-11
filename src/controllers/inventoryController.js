@@ -1075,18 +1075,14 @@ exports.downloadOutwardReceipt = async (req, res) => {
 exports.generateRollLabel = async (req, res) => {
     try {
         const { outwardItemId } = req.params;
-        
-        // Fetch item usage details
+        const { Op } = sequelize.Sequelize;
+        const VehicleType = require('../models').VehicleType;
+
+        // Current outward item
         const itemUsage = await OutwardItem.findByPk(outwardItemId, {
             include: [
-                { 
-                    model: OutwardRegister,
-                    include: [{ model: require('../models').VehicleType, as: 'Vehicle' }]
-                },
-                {
-                    model: ProductItem,
-                    include: [{ model: ProductMaster, include: [{ model: Unit, as: 'unit' }] }]
-                }
+                { model: OutwardRegister, include: [{ model: VehicleType, as: 'Vehicle' }] },
+                { model: ProductItem, include: [{ model: ProductMaster, include: [{ model: Unit, as: 'unit' }] }] }
             ]
         });
 
@@ -1096,59 +1092,108 @@ exports.generateRollLabel = async (req, res) => {
         const pm = pi?.ProductMaster;
         const reg = itemUsage.OutwardRegister;
 
-        // Create PDF (4x6 inches)
-        // 1 inch = 72 points
-        const doc = new PDFDocument({
-            size: [288, 432], // 4x6 inches
-            margin: 18
+        // Previous outward entry for the same product item (just before current)
+        const prevUsage = await OutwardItem.findOne({
+            where: {
+                product_item_id: pi.id,
+                id: { [Op.lt]: parseInt(outwardItemId) }
+            },
+            order: [['id', 'DESC']],
+            include: [{ model: OutwardRegister, include: [{ model: VehicleType, as: 'Vehicle' }] }]
         });
 
+        const prevReg = prevUsage?.OutwardRegister;
+
+        const stockBalance = parseFloat(pi?.available_quantity || 0).toFixed(2);
+        const lastUsageQty = parseFloat(itemUsage.quantity_used || 0).toFixed(2);
+        const unitName = pm?.unit?.name || 'Units';
+        const isColor = pm?.color && !['transparent', 'clear', ''].includes((pm.color || '').toLowerCase());
+        const ppfType = isColor ? `Color (${pm.color})` : 'Transparent';
+        const rollSerial = pi?.barcode || pi?.imei || pi?.serial_number || String(pi?.id || '');
+        const vehicleModel = reg?.Vehicle?.name || reg?.Vehicle?.vehicle_number || '';
+        const vinReg = reg?.vin_no || reg?.vehicle_reg_no || '';
+        const inchargePerson = reg?.incharge_person || '';
+        const usageDate = reg?.outward_date
+            ? new Date(reg.outward_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+            : 'N/A';
+
+        const prevVinReg = prevReg?.vin_no || prevReg?.vehicle_reg_no || '';
+        const prevVehicleModel = prevReg?.Vehicle?.name || prevReg?.Vehicle?.vehicle_number || '';
+
+        // PDF: 4x6 inches (288 x 432 pts)
+        const doc = new PDFDocument({ size: [288, 432], margin: 0 });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="Roll_Label_${outwardItemId}.pdf"`);
         doc.pipe(res);
 
-        // Header - Border
-        doc.rect(10, 10, 268, 412).stroke();
+        const W = 288, H = 432;
+        const pad = 14;
 
-        // Title
-        doc.fontSize(14).font('Helvetica-Bold').text('REMAINING STOCK LABEL', { align: 'center' });
-        doc.moveDown(0.5);
-        doc.moveTo(20, doc.y).lineTo(268, doc.y).stroke();
-        doc.moveDown(1);
+        // Outer border
+        doc.rect(4, 4, W - 8, H - 8).lineWidth(1.5).stroke('#1E3A8A');
 
-        // Content
-        const labelStyle = { font: 'Helvetica-Bold', size: 10 };
-        const valueStyle = { font: 'Helvetica', size: 11 };
+        // Title bar background
+        doc.rect(4, 4, W - 8, 28).fill('#1E3A8A');
+        doc.fillColor('white').fontSize(11).font('Helvetica-Bold')
+            .text('REMAINING STOCK LABEL', pad, 12, { width: W - pad * 2, align: 'center' });
 
-        // Helper to add row
-        const addRow = (label, value) => {
-            doc.fontSize(labelStyle.size).font(labelStyle.font).text(label, { continued: true });
-            doc.fontSize(valueStyle.size).font(valueStyle.font).text(` ${value || 'N/A'}`);
-            doc.moveDown(0.8);
-        };
+        // Previous info sub-header bar
+        let y = 36;
+        doc.rect(4, y, W - 8, 34).fill('#EFF6FF').stroke('#BFDBFE');
+        doc.fillColor('#1E40AF').fontSize(7.5).font('Helvetica-Bold')
+            .text(`Last Usage: ${lastUsageQty} ${unitName}`, pad, y + 4, { width: W - pad * 2 });
+        doc.fillColor('#374151').fontSize(7).font('Helvetica')
+            .text(`Previous VIN/REG No: ${prevVinReg}`, pad, y + 15, { width: W - pad * 2 });
+        doc.text(`Previous Vehicle Model: ${prevVehicleModel}`, pad, y + 24, { width: W - pad * 2 });
 
-        // Previous Quantity (Small)
-        doc.fontSize(8).font('Helvetica-Oblique').text(`Stock Balance: ${pi?.available_quantity || 0} ${pm?.unit?.name || 'Units'}`, { align: 'right' });
-        doc.moveDown(1);
+        // Divider
+        y = 74;
+        doc.moveTo(pad, y).lineTo(W - pad, y).lineWidth(0.5).stroke('#E5E7EB');
 
-        addRow('Vehicle Model:', reg?.Vehicle?.name || reg?.vehicle_reg_no);
-        addRow('VIN/REG No:', reg?.vehicle_reg_no || 'N/A');
-        
-        doc.moveDown(0.5);
-        const isColor = pm?.color && pm.color.toLowerCase() !== 'transparent' && pm.color.toLowerCase() !== 'clear';
-        addRow('PPF Roll:', isColor ? `Color (${pm.color})` : 'Transparent');
-        
-        addRow('Roll Brand:', pm?.product_make || 'N/A');
-        addRow('Roll Serial No:', pi?.barcode || pi?.imei || pi?.serial_number || pi?.id);
-        
-        doc.moveDown(1);
-        addRow('Date of Last Usage:', new Date(reg?.outward_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }));
+        // Stock Balance highlight box
+        y = 78;
+        doc.rect(pad, y, W - pad * 2, 20).fill('#F0FDF4').stroke('#A7F3D0');
+        doc.fillColor('#065F46').fontSize(10).font('Helvetica-Bold')
+            .text(`Stock Balance: ${stockBalance} ${unitName}`, pad + 4, y + 5, { width: W - pad * 2 - 8 });
 
-        // Footer / Scan Code
-        doc.moveDown(2);
-        doc.fontSize(8).font('Helvetica').text('Scan to track usage', { align: 'center' });
-        if (pi?.barcode) {
-            doc.fontSize(10).font('Courier-Bold').text(pi.barcode, { align: 'center' });
+        // Main fields
+        y = 104;
+        const rows = [
+            ['Vehicle Model:', vehicleModel || 'N/A'],
+            ['VIN/REG No:', vinReg || 'N/A'],
+            ['PPF Roll:', ppfType],
+            ['Roll Brand:', pm?.product_make || 'N/A'],
+            ['Roll Serial No:', rollSerial],
+            ['Incharge Person:', inchargePerson || 'N/A'],
+        ];
+
+        rows.forEach(([label, value]) => {
+            doc.fillColor('#6B7280').fontSize(7.5).font('Helvetica-Bold')
+                .text(label, pad, y, { width: 90, continued: false });
+            doc.fillColor('#111827').fontSize(8.5).font('Helvetica')
+                .text(value, pad + 94, y, { width: W - pad * 2 - 94 });
+            // subtle row separator
+            y += 20;
+            doc.moveTo(pad, y - 2).lineTo(W - pad, y - 2).lineWidth(0.3).stroke('#F3F4F6');
+        });
+
+        // Date of last usage
+        y += 4;
+        doc.moveTo(pad, y).lineTo(W - pad, y).lineWidth(0.8).stroke('#E5E7EB');
+        y += 6;
+        doc.fillColor('#374151').fontSize(8).font('Helvetica-Bold')
+            .text('Date of Last Usage:', pad, y, { continued: true });
+        doc.fillColor('#1D4ED8').fontSize(9).font('Helvetica-Bold')
+            .text(`  ${usageDate}`, { continued: false });
+
+        // Barcode text footer
+        if (rollSerial) {
+            y = H - 36;
+            doc.moveTo(pad, y).lineTo(W - pad, y).lineWidth(0.5).stroke('#E5E7EB');
+            doc.fillColor('#9CA3AF').fontSize(6.5).font('Helvetica')
+                .text('Roll ID', pad, y + 4, { width: W - pad * 2, align: 'center' });
+            doc.fillColor('#1E3A8A').fontSize(9).font('Courier-Bold')
+                .text(rollSerial, pad, y + 13, { width: W - pad * 2, align: 'center' });
         }
 
         doc.end();
